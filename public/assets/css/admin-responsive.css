@@ -1,0 +1,105 @@
+/* Shared responsive styles for admin pages and dialogs. */
+
+html,
+body {
+  -webkit-text-size-adjust: 100%;
+}
+
+.layui-table-tool .layui-btn-container,
+.layui-card-header {
+  row-gap: 8px;
+}
+
+@media (max-width: 992px) {
+  .layui-fluid {
+    padding: 10px !important;
+  }
+
+  .layui-card-header {
+    height: auto;
+    line-height: 1.5;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+  }
+
+  .layui-form .layui-inline {
+    display: block !important;
+    margin-right: 0 !important;
+    margin-bottom: 10px !important;
+  }
+
+  .layui-form .layui-form-label {
+    float: none;
+    width: 100% !important;
+    padding: 0 0 6px !important;
+    line-height: 1.4 !important;
+    text-align: left !important;
+  }
+
+  .layui-form .layui-input-inline,
+  .layui-form .layui-input-block {
+    width: 100% !important;
+    margin-left: 0 !important;
+  }
+
+  .layui-table-view .layui-table-box,
+  .layui-table-view .layui-table-header,
+  .layui-table-view .layui-table-body,
+  .layui-table-view .layui-table-main {
+    overflow-x: auto;
+  }
+
+  .layui-table-view .layui-table {
+    min-width: 760px;
+  }
+
+  .layui-btn-container .layui-btn {
+    margin-bottom: 6px !important;
+  }
+
+  .layui-layer-page {
+    left: 3vw !important;
+    right: 3vw !important;
+    width: auto !important;
+    max-width: none !important;
+  }
+
+  .layui-layer-page .layui-layer-content {
+    max-height: calc(100vh - 150px) !important;
+    overflow-y: auto !important;
+  }
+
+  .layui-layer-page .layui-layer-btn {
+    text-align: right;
+  }
+}
+
+@media (max-width: 768px) {
+  .layadmin-pagetabs {
+    display: none;
+  }
+
+  .layui-layout-admin .layui-body {
+    top: 50px;
+  }
+}
+
+@media (max-width: 600px) {
+  .layui-card-body {
+    padding: 10px;
+  }
+
+  .layui-btn {
+    padding: 0 10px;
+  }
+
+  .layui-btn + .layui-btn {
+    margin-left: 0;
+  }
+
+  .layui-table-page {
+    overflow-x: auto;
+    white-space: nowrap;
+  }
+}

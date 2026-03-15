@@ -1,0 +1,13 @@
+User-agent: *
+Disallow: /admin
+Disallow: /api/
+Disallow: /login
+Disallow: /register
+Disallow: /cron/
+Disallow: /install
+Disallow: /messages
+Disallow: /notifications
+Disallow: /profile
+Allow: /
+
+Sitemap: /sitemap.xml

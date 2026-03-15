@@ -1,0 +1,28 @@
+# 环境配置
+.env
+
+# 存储目录
+storage/logs/
+storage/plugin_config/
+storage/cache/
+storage/sessions/
+
+# 安装锁
+install/install.lock
+
+# 用户上传
+public/uploads/
+
+# 服务器日志
+server.log
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db

@@ -1,0 +1,143 @@
+/* 私信列表 */
+.message-list { display: flex; flex-direction: column; }
+.message-item {
+    display: flex; align-items: center; gap: 12px; padding: 12px 16px;
+    border-bottom: 1px solid var(--border-light); text-decoration: none; color: inherit;
+    transition: background var(--transition);
+}
+.message-item:last-child { border-bottom: none; }
+.message-item:hover { background: var(--gray-50); }
+.message-item.unread { background: var(--primary-50); }
+.message-item.unread:hover { background: rgba(0,102,255,.06); }
+.message-item-body { flex: 1; min-width: 0; }
+.message-item-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px; }
+.message-item-name { font-weight: 600; font-size: 14px; color: var(--text); }
+.message-item-time { font-size: 12px; color: var(--text-muted); }
+.message-item-preview { font-size: 13px; color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+/* 对话页 */
+.conversation-card { display: flex; flex-direction: column; overflow: hidden; padding: 0; }
+.conversation-header {
+    display: flex; align-items: center; gap: 10px; padding: 14px 20px;
+    border-bottom: 1px solid var(--border-light); font-size: 15px; font-weight: 600;
+    background: #fff;
+}
+.conversation-header a { color: var(--text); text-decoration: none; }
+.conversation-header a:hover { color: var(--primary); }
+.conversation-header .avatar-sm { border: 2px solid var(--gray-100); }
+
+/* 消息区域 */
+.conversation-messages {
+    flex: 1; padding: 24px 20px; min-height: 300px; max-height: 520px; overflow-y: auto;
+    display: flex; flex-direction: column; gap: 6px;
+    background: var(--gray-50);
+}
+
+/* 时间分隔 */
+.msg-date-sep {
+    text-align: center; font-size: 11px; color: var(--text-muted);
+    padding: 8px 0; user-select: none;
+}
+
+/* 气泡 */
+.msg-row { display: flex; align-items: flex-end; gap: 8px; max-width: 75%; }
+.msg-row.msg-self { align-self: flex-end; flex-direction: row-reverse; }
+.msg-row.msg-other { align-self: flex-start; }
+
+.msg-bubble {
+    padding: 10px 14px; font-size: 14px; line-height: 1.6;
+    word-break: break-word; position: relative;
+}
+.msg-self .msg-bubble {
+    background: var(--primary); color: #fff;
+    border-radius: 16px 16px 4px 16px;
+}
+.msg-other .msg-bubble {
+    background: #fff; color: var(--text);
+    border: 1px solid var(--border-light);
+    border-radius: 16px 16px 16px 4px;
+}
+.msg-time {
+    font-size: 11px; color: var(--text-muted); margin-top: 3px;
+    padding: 0 4px; white-space: nowrap;
+}
+.msg-self .msg-time { text-align: right; }
+
+/* 输入区 */
+.conversation-input {
+    display: flex; gap: 10px; padding: 14px 20px;
+    border-top: 1px solid var(--border-light);
+    align-items: flex-end; background: #fff;
+}
+.conversation-input .form-textarea {
+    flex: 1; resize: none; min-height: 40px; max-height: 120px;
+    border-radius: var(--radius-lg); padding: 10px 14px;
+    border: 1px solid var(--border); font-size: 14px;
+    transition: border-color var(--transition);
+}
+.conversation-input .form-textarea:focus { outline: none; border-color: var(--primary); }
+.conversation-input .btn { border-radius: var(--radius-lg); padding: 10px 20px; }
+
+/* 撤回 */
+.msg-meta { display: flex; align-items: center; gap: 8px; margin-top: 3px; padding: 0 4px; }
+.msg-recall-btn {
+    font-size: 11px; color: var(--text-muted); background: none; border: none;
+    cursor: pointer; padding: 0; opacity: 0; transition: opacity var(--transition);
+}
+.msg-row:hover .msg-recall-btn { opacity: 1; }
+.msg-recall-btn:hover { color: var(--danger); }
+@media (hover: none) and (pointer: coarse) {
+    .msg-recall-btn { opacity: 0.6; }
+}
+.msg-recalled {
+    font-size: 12px; color: var(--text-muted); font-style: italic;
+    padding: 6px 0;
+}
+
+/* 暗色模式 */
+html.dark .conversation-header { background: var(--bg-card); }
+html.dark .msg-other .msg-bubble { background: var(--bg-card); border-color: var(--border); }
+html.dark .conversation-input { background: var(--bg-card); }
+
+/* 响应式 */
+
+/* 小手机 ≤ 374px */
+@media (max-width: 374px) {
+    .msg-row { max-width: 90%; }
+    .conversation-messages { max-height: 350px; padding: 10px 8px; min-height: 200px; }
+    .conversation-header { padding: 8px 10px; font-size: 13px; }
+    .conversation-input { padding: 8px 10px; gap: 6px; }
+    .conversation-input .form-textarea { padding: 8px 10px; font-size: 14px; }
+    .conversation-input .btn { padding: 8px 12px; font-size: 12px; }
+    .msg-bubble { padding: 7px 10px; font-size: 13px; }
+    .message-item { padding: 8px 10px; gap: 8px; }
+    .message-item-name { font-size: 12px; }
+    .message-item-preview { font-size: 11px; }
+}
+
+/* 手机 ≤ 767px */
+@media (max-width: 767px) {
+    .msg-row { max-width: 85%; }
+    .conversation-messages { max-height: 400px; padding: 14px 12px; min-height: 250px; gap: 4px; }
+    .conversation-header { padding: 10px 12px; font-size: 14px; }
+    .conversation-input { padding: 10px 12px; gap: 8px; }
+    .conversation-input .form-textarea { padding: 8px 12px; font-size: 14px; min-height: 44px; }
+    .conversation-input .btn { padding: 10px 16px; font-size: 13px; min-height: 40px; }
+    .msg-bubble { padding: 8px 12px; font-size: 13px; }
+    .message-item { padding: 10px 12px; gap: 10px; min-height: 56px; }
+    .message-item-name { font-size: 13px; }
+    .message-item-time { font-size: 11px; }
+    .message-item-preview { font-size: 12px; }
+}
+
+/* 平板 768px+ */
+@media (min-width: 768px) {
+    .conversation-messages { max-height: 520px; min-height: 360px; }
+    .msg-row { max-width: 70%; }
+}
+
+/* 桌面 1024px+ */
+@media (min-width: 1024px) {
+    .conversation-messages { max-height: 600px; }
+    .msg-row { max-width: 60%; }
+}
