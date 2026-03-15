@@ -1,7 +1,5 @@
 <div align="center">
 
-<img src="public/assets/images/logo.png" alt="AMuBBS" width="80" height="80">
-
 # AMuBBS
 
 **A lightweight, high-performance forum system built with PHP 8.2 from scratch.**
@@ -277,7 +275,9 @@ git commit -m 'feat: describe your change'
 git push origin feature/your-feature
 ```
 
-Commits follow [Conventional Commits](https://www.conventionalcommits.org/).
+## 🗺️ Roadmap
+
+All features have been completed!
 
 ### License
 

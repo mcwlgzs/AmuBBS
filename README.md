@@ -1,7 +1,5 @@
 <div align="center">
 
-<img src="public/assets/images/logo.png" alt="AMuBBS" width="100" height="100">
-
 # AMuBBS
 
 ### 轻量、高性能、零依赖的现代 PHP 论坛系统
