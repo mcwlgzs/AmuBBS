@@ -10,7 +10,8 @@
 [![MySQL 8.0+](https://img.shields.io/badge/MySQL-8.0+-4479A1?style=for-the-badge&logo=mysql&logoColor=white)](https://mysql.com)
 [![Redis 7.0+](https://img.shields.io/badge/Redis-7.0+-DC382D?style=for-the-badge&logo=redis&logoColor=white)](https://redis.io)
 [![Alpine.js](https://img.shields.io/badge/Alpine.js-3.x-77C1D2?style=for-the-badge&logo=alpine.js&logoColor=white)](https://alpinejs.dev)
-[![License MIT](https://img.shields.io/badge/License-MIT-green?style=for-the-badge)](./LICENSE)
+[![License](https://img.shields.io/badge/License-Proprietary-red?style=for-the-badge)](./LICENSE)
+[![Commercial Use](https://img.shields.io/badge/Commercial-Forbidden-red?style=for-the-badge)](./LICENSE)
 
 中文 | [English](./README.en.md)
 
@@ -606,7 +607,12 @@ git push origin feature/your-feature
 
 ## 📄 开源协议
 
-[MIT License](./LICENSE) — 自由使用，随心所欲。
+**非商业使用许可证** — 详情请阅读 [LICENSE](./LICENSE)
+
+- ✅ 免费用于个人学习、研究、非营利性目的
+- ✅ 可以修改和再分发
+- ❌ **禁止任何商业用途**（需获得授权）
+- ❌ 禁止去除版权声明
 
 ---
 

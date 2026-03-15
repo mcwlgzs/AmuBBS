@@ -1,0 +1,51 @@
+# AMuBBS 开源许可证
+
+版权所有 (c) 2024 AMuBBS
+
+**非商业使用许可**
+
+本程序（以下称为"软件"）仅授权给您用于非商业目的。在未获得版权所有者明确书面许可的情况下，禁止将本软件用于任何商业用途，包括但不限于：
+
+- 商业产品或服务的销售
+- 商业网站或应用的运营
+- 任何产生直接或间接经济收益的活动
+
+## 授权条款
+
+在满足以下条件的前提下，您可以自由使用、修改和分发本软件：
+
+1. **非商业使用** - 本软件仅可用于个人学习、研究、非营利性目的
+2. **保留版权声明** - 分发时必须保留本许可证声明和版权信息
+3. **相同许可证** - 如果您修改并再分发本软件，改动部分必须采用相同许可证
+
+## 商业授权
+
+如需将本软件用于任何商业目的，必须事先获得版权所有者的书面授权许可。
+
+联系作者获取商业授权：https://github.com/mcwlgzs/AmuBBS
+
+## 免责声明
+
+本软件按"原样"提供，不提供任何明示或暗示的保证，包括但不限于：
+- 适销性保证
+- 特定用途适用性保证
+- 非侵权保证
+
+在任何情况下，版权所有者均不对因使用本软件而产生的任何索赔、损害或损失负责。
+
+---
+
+**AMuBBS License**
+
+Copyright (c) 2024 AMuBBS
+
+This software is provided for non-commercial use only. Commercial use is prohibited without prior written permission from the copyright owner.
+
+Permission is hereby granted, free of charge, to any person obtaining a copy of this software, to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, subject to the following conditions:
+
+1. The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
+2. Commercial use is NOT permitted without prior written authorization from the copyright owner.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+For commercial licensing, please contact the author.
