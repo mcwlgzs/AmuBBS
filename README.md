@@ -168,7 +168,7 @@ AMuBBS 是一款面向中小型社区的**现代论坛系统**。不依赖任何
 | **缓存** | Redis 7.0+ | 多级缓存，Session 共享，频率限制 |
 | **前端** | Alpine.js 3.x | 15KB 极致轻量，类 Vue 语法，零构建 |
 | **后台 UI** | Layui | 开箱即用的后台管理界面 |
-| **架构模式** | CSR 三层架构 | Controller → Service → Repository |
+| **架构模式** | 三层架构 | Controller → Service → Repository |
 | **插件系统** | 事件驱动 | EventDispatcher + 依赖注入容器 |
 
 ---
@@ -248,19 +248,19 @@ UPLOAD_DRIVER=local          # local | oss | nfs
 ```
 AMuBBS/
 ├── app/                             # 📦 应用层
-│   ├── Controllers/                 #   控制器（18 个前台 + 17 个后台）
+│   ├── Controllers/                 #   控制器（17 个前台 + 15 个后台）
 │   │   ├── Admin/                   #   后台管理控制器
 │   │   ├── Index.php                #   首页
 │   │   ├── Thread.php               #   帖子
 │   │   ├── User.php                 #   用户
 │   │   └── ...
-│   ├── Services/                    #   业务逻辑层（27 个服务）
+│   ├── Services/                    #   业务逻辑层（35 个服务）
 │   ├── Repositories/                #   数据访问层
 │   ├── Middlewares/                  #   中间件（Auth / CSRF / RateLimit / RunLevel）
 │   ├── Events/                      #   事件定义
 │   └── Listeners/                   #   事件监听器
 │
-├── core/                            # ⚙️ 自研微框架（27 个核心类）
+├── core/                            # ⚙️ 自研微框架（21 个核心类）
 │   ├── Bootstrap.php                #   启动引导
 │   ├── Router.php                   #   路由器
 │   ├── Database.php                 #   数据库封装
@@ -276,11 +276,7 @@ AMuBBS/
 │   ├── database.php                 #   数据库配置
 │   └── cache.php                    #   缓存配置
 │
-├── plugins/                         # 🔌 插件目录
-│   ├── AutoAvatar/                  #   自动头像
-│   ├── Emoji/                       #   表情解析
-│   ├── SocialLogin/                 #   第三方登录
-│   └── TinymceEditor/               #   富文本编辑器
+├── plugins/                         # 🔌 插件目录（需手动加载）
 │
 ├── resources/                       # 🎨 资源文件
 │   ├── views/                       #   视图模板
@@ -297,9 +293,9 @@ AMuBBS/
 │   └── sessions/                    #   Session 文件
 │
 ├── install/                         # 📥 安装器 & 数据库结构（30 张表）
-├── tests/                           # 🧪 测试文件
-├── docs/                            # 📚 开发文档（14 篇）
+├── docs/                            # 📚 开发文档（16 篇）
 ├── preload.php                      # OPcache 预加载
+├── deploy.sh                        # 🚀 自动部署脚本
 └── .env.example                     # 环境变量模板
 ```
 
@@ -309,14 +305,7 @@ AMuBBS/
 
 AMuBBS 采用**事件驱动 + 依赖注入**的插件架构，支持热插拔、配置管理和生命周期管理。
 
-### 内置插件
-
-| 插件 | 说明 | 状态 |
-|:-----|:-----|:----:|
-| **AutoAvatar** | 注册时自动分配随机头像（内置 57 款） | ✅ |
-| **Emoji** | Emoji 短代码解析（`:smile:` → 😄） | ✅ |
-| **SocialLogin** | OAuth 第三方登录 — GitHub / Google / 微信 / QQ | ✅ |
-| **TinymceEditor** | TinyMCE 富文本编辑器，作为 Markdown 的替代方案 | ✅ |
+> ⚠️ **注意**：插件系统正在重构中，当前版本需手动加载插件。
 
 ### 开发自己的插件
 
@@ -530,7 +519,7 @@ AMuBBS 提供完整的 RESTful API，支持移动端和第三方集成：
 
 ## 📚 开发文档
 
-完整文档位于 [`docs/`](./docs/) 目录，共 14 篇：
+完整文档位于 [`docs/`](./docs/) 目录，共 16 篇：
 
 | # | 文档 | 内容 |
 |:-:|:-----|:-----|
