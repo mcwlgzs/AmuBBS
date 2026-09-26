@@ -33,9 +33,22 @@
 
 ## 📖 项目简介
 
-AMuBBS 是一款面向中小型社区的**现代论坛系统**。不依赖任何第三方框架，基于 PHP 8.2 从零构建自研微框架，采用 **Controller + Service + Model** 架构，缓存默认走文件驱动（没有 Redis 也能跑），追求极致的轻量与部署体验。
+AMuBBS 是一款面向中小型社区的**现代论坛系统**。不依赖任何第三方框架，基于 PHP 8（**兼容 8.0+，推荐 8.2**）从零构建自研微框架，采用 **Controller + Service + Model** 架构，缓存默认走文件驱动（没有 Redis 也能跑），追求极致的轻量与部署体验。
 
-> 💡 设计理念参考 [Xiuno BBS](https://bbs.xiuno.com/)，以现代 PHP 8.2 架构全面重新实现。
+> 💡 设计理念参考 [Xiuno BBS](https://bbs.xiuno.com/)，以现代 PHP 架构全面重新实现。
+
+### 🎯 优势速览
+
+| 优势 | 具体表现 | 为什么重要 |
+|:-----|:---------|:-----------|
+| **真零依赖** | 不需要 Composer、npm/Node、任何构建步骤；框架自研，`core/` 只有 25 个文件，仓库里没有 `vendor/` 目录 | 不用装工具链，上传即用；少一层供应链风险 |
+| **30 秒装完** | 访问 `/install` 走六步网页向导，自动建库建表、建管理员、写安装锁 | 不用 SSH、不用手敲 SQL；面板主机也能装 |
+| **没有 Redis 也能跑** | `CACHE_DRIVER=auto` 探测不到 Redis 就自动用 `storage/cache/` 文件缓存，功能不降级 | 少一台中间件、少一份运维；小站本来不需要 Redis |
+| **没有 cron 也不脏** | 文件缓存惰性 GC，过期数据在读写时顺手清理；cron 只做可选的保洁任务 | 共享主机/面板主机常常不给 crontab |
+| **一套代码从共享主机跑到多节点** | 1 核 1 GB 虚拟机、共享虚拟主机、多节点集群，改的只是 `.env` | 先低成本上线，长大了不用换系统 |
+| **默认就带安全基线** | 全局 CSRF（双提交 Cookie）、XSS 二次清洗、SQL 全参数化、登录「账号 + IP」双维度锁定、上传白名单 + 禁执行 | 论坛是被扫的重点目标，默认配置不裸奔 |
+| **零构建前端** | htmx 2 + 手写 CSS，前台不加载 layui；后台用 layuimini v2 + Layui 2.6.3 | 首屏体积小、不依赖 CDN、没有打包产物 |
+| **可验证** | 仓库自带 125 项 HTTP 冒烟、102 项安装自检、7 个静态检查器（`scripts/verify.ps1` 一条命令跑完） | 升级/改造后能自己证明「没坏」 |
 
 ### 与 Xiuno BBS 的对比
 
@@ -188,9 +201,44 @@ AMuBBS 是一款面向中小型社区的**现代论坛系统**。不依赖任何
 >
 > 💡 可选扩展：`redis`（有则启用，无则自动走文件缓存）、`opcache`（提速）、`gd`（图片处理）、`zip`（备份/插件）
 >
+> 📁 需要**可写目录**：`storage/`、`config/`、`install/`（写安装锁）、`public/uploads/`。
+> 这些目录要归 PHP 运行用户所有（Nginx + PHP-FPM 通常是 `www-data`）；安装向导第 2 步会逐个检测并指出哪个不可写。
+>
 > ✅ 不需要：Composer、npm/Node、root 权限、shell 访问、常驻进程、cron
 
 ### 安装步骤
+
+两种方式，**推荐方式 A**（不需要 SSH，也不需要手敲 SQL）：
+
+#### 方式 A：网页安装向导（推荐，约 30 秒）
+
+```bash
+# 1️⃣ 拿到代码
+git clone https://github.com/mcwlgzs/AMuBBS.git && cd AMuBBS
+
+# 2️⃣ 复制配置 + 给目录写权限（向导会检测这些目录可写）
+cp .env.example .env        # 通常只填 DB_* 四项；没有 Redis 就保持 CACHE_DRIVER=auto
+chmod -R 755 storage/ config/ install/ public/uploads/
+# 若 PHP 以别的用户运行（如 www-data），改用 chown -R www-data:www-data storage config install public/uploads
+
+# 3️⃣ 起服务：开发用内置服务器；生产把 public/ 指向 Nginx/Apache 站点根目录
+php -S localhost:8000 -t public public/router.php
+```
+
+浏览器打开站点即自动进入 `/install`，六步走完：
+
+| 步骤 | 你要做的 | 程序自动完成的 |
+|:-----|:---------|:---------------|
+| 1️⃣ 安装说明 | 按提示继续 | 展示环境要求与许可（见 [LICENSE](./LICENSE) / [DISCLAIMER.md](./DISCLAIMER.md)） |
+| 2️⃣ 环境检测 | 无 | 校验 PHP ≥ 8.0、`pdo` / `pdo_mysql` / `mbstring` / `json`（`redis`、`OPcache` 可选），以及 `config/`、`storage/logs|cache|sessions/`、`install/` 是否可写 |
+| 3️⃣ 数据库 | 填主机 / 端口 / 库名 / 账号（**库可以让向导建**，只要账号有建库权限） | 建库、导入 39 张表 |
+| 4️⃣ 管理员 | 设置管理员账号与密码 | 创建管理员（bcrypt 哈希） |
+| 5️⃣ 站点设置 | 填站点名称、站点 URL 等 | 写入站点配置 |
+| 6️⃣ 完成 | —— | 写 `install/install.lock`；此后 `/install` 只显示「已安装」提示，**要重装需先删掉这个锁文件** |
+
+安装完成后进后台：`/admin`（用第 4 步创建的账号登录）。
+
+#### 方式 B：命令行手动安装（适合 CI / 自动化）
 
 ```bash
 # 1️⃣ 克隆项目
@@ -210,13 +258,13 @@ mysql -u root -p amubbs < install/database.sql
 mysql -u root -p amubbs < install/optional_fulltext.sql
 
 # 4️⃣ 设置目录权限
-chmod -R 755 storage/ public/uploads/
+chmod -R 755 storage/ config/ public/uploads/
 
 # 5️⃣ 启动开发服务器
 php -S localhost:8000 -t public public/router.php
 ```
 
-打开浏览器访问 `http://localhost:8000`，首次进入将引导完成安装配置。
+手动导入表结构后，浏览器首次访问仍会被引导到 `/install` 完成管理员与站点设置（此步骤会写锁文件；不需要向导时见 [`install/INSTALL.md`](./install/INSTALL.md)）。
 
 ### 环境变量配置
 
@@ -289,6 +337,65 @@ CACHE_DRIVER=auto            # auto（推荐）| file | redis
 | 中文搜索不准 | 中文关键词自动改走 LIKE，绕开 InnoDB FULLTEXT 对 CJK 分词不准导致的漏结果 |
 
 > 💡 缓存目录默认 `storage/cache/`，可用 `CACHE_FILE_PATH` 指到站点目录之外。
+
+---
+
+## ☁️ 部署到虚拟机 / VPS / 云服务器
+
+**可以，而且这是最舒服的部署形态。** 一台 **1 核 1 GB** 的 Ubuntu / Debian 虚拟机（本地 VMware / VirtualBox / Hyper-V，或云上的轻量应用服务器、VPS）就能跑起一个中小社区：
+
+- 不需要 Docker、不需要 Composer/Node、不需要 daemon 或常驻进程；
+- 只要求 **PHP 8.0+**（推荐 8.2）、**MySQL 5.6+ / MariaDB 10+**、Web 服务器（Nginx / Apache 都行）；
+- 有 root 权限当然更好（能装 PHP-FPM、配 systemd），**但没有也能装**——面板主机就够。
+
+### 三种常见做法
+
+| 方式 | 适合谁 | 关键点 |
+|:-----|:-------|:-------|
+| **面板（宝塔 / aaPanel / 1Panel 等）** | 不熟命令行 | 建站时把**运行目录设为 `public/`**、PHP 选 8.0+；上传代码 → 建库 → 访问 `/install` 走向导 |
+| **命令行 LEMP** | 想要干净可控 | `nginx + php-fpm + mariadb`，抄 [`install/nginx.conf.example`](./install/nginx.conf.example)（已含 `/uploads/` 禁执行、静态缓存、隐藏文件兜底） |
+| **容器 / 一键包** | 已在用 Docker | 本项目**不带 Dockerfile**；用任意 `nginx + php-fpm + mariadb` 镜像，站点根指向 `public/`，把 `storage/`、`public/uploads/` 挂成卷即可 |
+
+### 命令行部署（Ubuntu 22.04 / 24.04 为例）
+
+```bash
+# 1. 依赖：PHP 8.2 + 必需扩展 + MariaDB + Nginx
+sudo apt update
+sudo apt install -y nginx mariadb-server git unzip \
+    php8.2-fpm php8.2-mysql php8.2-mbstring php8.2-xml php8.2-curl php8.2-gd php8.2-zip
+
+# 2. 放代码：网站根目录必须指向 public/，storage/ 要留在 Web 根目录之外
+sudo mkdir -p /var/www/amubbs && cd /var/www/amubbs
+sudo git clone https://github.com/mcwlgzs/AMuBBS.git .
+
+# 3. 配置与权限（安装向导会检测这些目录是否可写）
+sudo cp .env.example .env
+sudo chown -R www-data:www-data /var/www/amubbs
+sudo find /var/www/amubbs -type d -exec chmod 755 {} \;
+sudo chmod 640 /var/www/amubbs/.env
+
+# 4. Nginx：抄仓库里的示例，改 server_name 与 root（root 指向 .../public）
+sudo cp install/nginx.conf.example /etc/nginx/sites-available/amubbs
+sudo ln -s /etc/nginx/sites-available/amubbs /etc/nginx/sites-enabled/amubbs
+sudo nginx -t && sudo systemctl reload nginx
+sudo systemctl enable --now php8.2-fpm mariadb
+
+# 5. 建库（也可以让安装向导建，只要账号有建库权限）
+sudo mariadb -e "CREATE DATABASE amubbs DEFAULT CHARSET utf8mb4 COLLATE utf8mb4_unicode_ci;"
+
+# 6. 打开 http://<虚拟机IP>/ 走向导六步；生产保持 APP_DEBUG=false
+```
+
+**虚拟机部署的 4 个常见坑**：
+
+1. **根目录指错了** —— 站点根必须是 `public/`，不是项目根；否则 `.env`、`storage/`、`config/` 可能被直接下载。
+2. **目录不可写** —— 向导第 2 步会明确报出哪个目录不可写；把 `storage/`、`config/`、`install/` 交给 PHP-FPM 的运行用户（`www-data`）即可。
+3. **安全组/防火墙没开** —— 云主机要在控制台放行 80/443；本机虚拟机注意网卡选「桥接」才能被局域网访问。
+4. **没配 HTTPS** —— 生产建议 `sudo apt install certbot python3-certbot-nginx && sudo certbot --nginx`；同时在 `.env` 里把 `APP_URL` 写成 `https://你的域名`。
+
+> 需要定时保洁（清理过期缓存/日志、补零头浏览量）时，加一条计划任务即可，不依赖常驻进程。
+> 注意密钥**只走请求头 `X-Cron-Key`**（放 query 会进访问日志；`cron_key` 未配置时一律 403）：
+> `*/10 * * * * curl -fsS -H "X-Cron-Key: 后台设置的cron_key" "https://你的域名/cron/run" >/dev/null`
 
 ---
 
@@ -431,7 +538,7 @@ class Plugin implements PluginInterface
 ```
 请求 → ① 进程内缓存（静态变量，零开销）
      → ② OPcache（字节码缓存 + JIT 编译）
-     → ③ Redis（数据缓存 / 页面缓存 / MGET 批量预热）
+     → ③ 分布式缓存（Redis；没有 Redis 时自动落到 storage/cache/ 文件缓存）
      → ④ MySQL（持久化存储，InnoDB Buffer Pool）
 ```
 
@@ -439,8 +546,8 @@ class Plugin implements PluginInterface
 
 | 优化项 | 说明 |
 |:-------|:-----|
-| OPcache 预加载 | `preload.php` 预编译 42 个核心文件到共享内存 |
-| 页面级缓存 | 匿名用户整页 Redis 缓存，< 5ms 响应 |
+| OPcache 预加载 | `preload.php` 预编译 46 个核心文件到共享内存 |
+| 页面级缓存 | 匿名用户首页整页缓存（Redis 或文件驱动），命中即直接返回 |
 | Session 按需启动 | 匿名 GET 请求跳过 `session_start()` |
 | 延迟写入 | `fastcgi_finish_request()` 后执行非关键写操作 |
 | 路由 O(1) 查找 | 静态路由使用 hashmap，动态路由正则匹配 |
@@ -449,39 +556,17 @@ class Plugin implements PluginInterface
 
 ---
 
-## 🖥️ 服务器要求
+## 🖥️ 服务器 / 虚拟机配置建议
 
-<table>
-<tr>
-<th></th>
-<th>最低配置</th>
-<th>推荐配置</th>
-</tr>
-<tr>
-<td><b>CPU</b></td>
-<td>2 核</td>
-<td>4 核</td>
-</tr>
-<tr>
-<td><b>内存</b></td>
-<td>4 GB</td>
-<td>8 GB</td>
-</tr>
-<tr>
-<td><b>硬盘</b></td>
-<td>20 GB SSD</td>
-<td>50 GB SSD</td>
-</tr>
-<tr>
-<td><b>带宽</b></td>
-<td>5 Mbps</td>
-<td>10 Mbps</td>
-</tr>
-<tr>
-<td><b>系统</b></td>
-<td colspan="2">Ubuntu 22.04 LTS / CentOS 8+ / Debian 12</td>
-</tr>
-</table>
+| 规模 | CPU | 内存 | 磁盘 | 说明 |
+|:-----|:----|:-----|:-----|:-----|
+| 个人 / 测试 | 1 核 | 1 GB | 10 GB | 关掉用不到的服务即可跑；文件缓存 |
+| 小社区（推荐起步） | 1–2 核 | 2 GB | 20 GB | 开 OPcache；可选 Redis |
+| 中型社区 | 2–4 核 | 4 GB+ | 40 GB+ | 加 Redis，静态资源走 CDN，数据库可独立一台 |
+
+**操作系统**：Ubuntu 22.04 / 24.04 LTS、Debian 12、CentOS 8+ / AlmaLinux / Rocky 均可（只要 PHP 8.0+）；Windows 建议只用于开发自测（`php -S` 或 Nginx for Windows）。
+
+> 内存主要被 MySQL/MariaDB 占用（默认配置约 300–500 MB），PHP-FPM 按 `pm.max_children` 估算。本项目自身很轻，**不需要为它单独买大机器**；具体部署步骤见上面的「部署到虚拟机 / VPS / 云服务器」与 [`install/INSTALL.md`](./install/INSTALL.md)。
 
 ---
 

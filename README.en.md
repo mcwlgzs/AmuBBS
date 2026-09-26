@@ -24,16 +24,19 @@
 
 Most forum systems are bloated with dependencies and slow by default. AMuBBS takes a different approach — a custom micro-framework built entirely from scratch, no Composer, no npm, no build step. Just pure PHP performance.
 
-> Inspired by [Xiuno BBS](https://bbs.xiuno.com/), reimagined for PHP 8.2 with modern architecture patterns.
+> Inspired by [Xiuno BBS](https://bbs.xiuno.com/), reimagined on modern PHP (8.0+ compatible, 8.2 recommended).
 
 ### At a Glance
 
 | | Feature | Detail |
 |:--|:--------|:-------|
 | ⚡ | **Fast** | Sub-50ms response, anonymous page cache under 5ms |
-| 🪶 | **Lightweight** | Under 4MB per request, 28-class micro-framework |
-| 🔌 | **Extensible** | Event-driven plugin system with dependency injection |
-| 🛡️ | **Secure** | CSRF, XSS filtering, SQL injection prevention, rate limiting |
+| 🪶 | **Lightweight** | Custom micro-framework — `core/` is only 25 files, no `vendor/` directory |
+| 🖱️ | **Installs in 30s** | Six-step `/install` wizard creates the schema, the admin account and the install lock |
+| 🧩 | **Deploys anywhere** | 1-core/1GB VM, shared hosting or a multi-node cluster — only `.env` changes |
+| 🗄️ | **Redis-free by default** | `CACHE_DRIVER=auto` falls back to the file cache, no feature loss |
+| 🔌 | **Extensible** | WordPress-style hooks (`add_action` / `apply_filters`), enable/disable from the admin |
+| 🛡️ | **Secure** | Global CSRF, XSS sanitising, prepared statements everywhere, login lockout, upload allowlist |
 | 📦 | **Zero Deps** | No Composer, no npm, no build tools required |
 
 ---
@@ -103,6 +106,36 @@ Backend                          Frontend
 
 ### Quick Start
 
+**Option A — web installer (recommended, ~30 seconds, no SSH and no manual SQL):**
+
+```bash
+# 1. Get the code
+git clone https://github.com/mcwlgzs/AMuBBS.git && cd AMuBBS
+
+# 2. Configure + permissions (the installer checks these are writable)
+cp .env.example .env        # usually only DB_* is needed; keep CACHE_DRIVER=auto
+chmod -R 755 storage/ config/ install/ public/uploads/
+# if PHP runs as another user (e.g. www-data): chown -R www-data:www-data storage config install public/uploads
+
+# 3. Run (dev). In production point your Nginx/Apache docroot at public/
+php -S localhost:8000 -t public public/router.php
+```
+
+Open the site — you are taken to `/install`, a six-step wizard:
+
+| Step | What you do | What it does for you |
+|:-----|:------------|:---------------------|
+| 1️⃣ Instructions | Continue | Shows requirements and the license ([LICENSE](./LICENSE) / [DISCLAIMER.md](./DISCLAIMER.md)) |
+| 2️⃣ Environment check | Nothing | Verifies PHP ≥ 8.0, `pdo` / `pdo_mysql` / `mbstring` / `json` (`redis`, `OPcache` optional) and that `config/`, `storage/logs|cache|sessions/`, `install/` are writable |
+| 3️⃣ Database | Host / port / database / user (**the wizard can create the database** if the account is allowed to) | Creates the schema (39 tables) |
+| 4️⃣ Administrator | Admin username + password | Creates the admin account (bcrypt) |
+| 5️⃣ Site settings | Site name, site URL, … | Writes site settings |
+| 6️⃣ Done | — | Writes `install/install.lock`; `/install` then only shows an "already installed" notice — **delete that lock file to reinstall** |
+
+Then sign in to the admin panel at `/admin`.
+
+**Option B — manual (CLI, for CI / automation):**
+
 ```bash
 # 1. Clone
 git clone https://github.com/mcwlgzs/AMuBBS.git && cd AMuBBS
@@ -117,13 +150,30 @@ mysql -u root -p -e "CREATE DATABASE amubbs DEFAULT CHARSET utf8mb4 COLLATE utf8
 mysql -u root -p amubbs < install/database.sql
 
 # 4. Permissions
-chmod -R 755 storage/ public/uploads/
+chmod -R 755 storage/ config/ install/ public/uploads/
 
 # 5. Run
 php -S localhost:8000 -t public public/router.php
 ```
 
-> Visit `http://localhost:8000` — the web installer will guide you through setup.
+> Either way the first browser visit is guided to `/install` to finish admin + site setup; see
+> [`install/INSTALL.md`](./install/INSTALL.md) for the fully manual path.
+
+### Requirements
+
+| | Minimum | Recommended | Notes |
+|:--|:--------|:------------|:------|
+| PHP | **8.0** | 8.2+ | Only 8.0 features (`str_starts_with`, `match`, …) are used |
+| Database | MySQL 5.6 / MariaDB 10.0 | 5.7+ / 8.0 | No MySQL 8-only syntax; InnoDB |
+| Redis | not needed | 7.0+ | **Optional** — file cache is used automatically when absent |
+| Web server | any | Nginx 1.20+ | Apache, shared hosting and `php -S` all work |
+
+Required PHP extensions: **`pdo_mysql`, `mbstring`, `json`**. Optional: `redis`, `opcache`,
+`gd`, `zip`. **Not required:** Composer, npm/Node, root access, shell access, any daemon, cron.
+
+Writable directories: **`storage/`, `config/`, `install/` (install lock), `public/uploads/`** —
+they must be owned by the PHP user (`www-data` for Nginx + PHP-FPM). The installer's step 2 checks
+each one and tells you which is not writable.
 
 ### Configuration
 
@@ -230,6 +280,50 @@ See [`docs/10-插件开发.md`](./docs/10-插件开发.md) for the author guide 
 [`docs/08-插件系统.md`](./docs/08-插件系统.md) for the implementation.
 
 </details>
+
+### Deploy on a VM / VPS / Cloud Server
+
+**Yes — and it is the most comfortable option.** A **1-core / 1 GB** Ubuntu or Debian VM (VMware,
+VirtualBox, Hyper-V locally; or any cloud VPS) is enough for a small community. No Docker, no
+Composer/Node, no daemon: PHP 8.0+ (8.2 recommended), MySQL 5.6+ / MariaDB 10+, and any web
+server. Root access helps (PHP-FPM, systemd) but is **not** required — a hosting panel works too.
+
+```bash
+# Ubuntu 22.04 / 24.04
+sudo apt update
+sudo apt install -y nginx mariadb-server git unzip \
+    php8.2-fpm php8.2-mysql php8.2-mbstring php8.2-xml php8.2-curl php8.2-gd php8.2-zip
+
+# Docroot must be public/ — storage/ stays OUTSIDE the web root
+sudo mkdir -p /var/www/amubbs && cd /var/www/amubbs
+sudo git clone https://github.com/mcwlgzs/AMuBBS.git .
+
+sudo cp .env.example .env
+sudo chown -R www-data:www-data /var/www/amubbs
+sudo chmod 640 /var/www/amubbs/.env
+
+sudo cp install/nginx.conf.example /etc/nginx/sites-available/amubbs   # edit server_name + root
+sudo ln -s /etc/nginx/sites-available/amubbs /etc/nginx/sites-enabled/amubbs
+sudo nginx -t && sudo systemctl reload nginx
+sudo systemctl enable --now php8.2-fpm mariadb
+
+sudo mariadb -e "CREATE DATABASE amubbs DEFAULT CHARSET utf8mb4 COLLATE utf8mb4_unicode_ci;"
+# then open http://<vm-ip>/ and finish the six-step wizard; keep APP_DEBUG=false
+```
+
+| Workload | CPU | RAM | Disk |
+|:---------|:----|:----|:-----|
+| Personal / test | 1 core | 1 GB | 10 GB |
+| Small community (recommended start) | 1–2 cores | 2 GB | 20 GB |
+| Medium community | 2–4 cores | 4 GB+ | 40 GB+ |
+
+Four things that bite people on VMs: (1) pointing the docroot at the project root instead of
+`public/`; (2) unwritable `storage/`, `config/`, `install/` (the wizard's step 2 tells you
+exactly which); (3) cloud firewall/security group not allowing 80/443 (or a NAT-mode NIC on a
+local VM); (4) no HTTPS — use `certbot --nginx` and set `APP_URL` accordingly.
+
+Prefer a GUI? With a hosting panel (aaPanel / BT Panel / 1Panel), create a site whose **run
+directory is `public/`**, upload the code, create the database and open `/install`.
 
 ### Production Deployment
 

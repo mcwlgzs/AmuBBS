@@ -17,14 +17,28 @@
 
 ---
 
-## 一、推荐方式：安装向导
+## 一、推荐方式：安装向导（六步网页向导）
 
 1. 将 **`public/` 目录**设为网站根目录（`storage/` 必须在 Web 根目录之外）
-2. 确保 `storage/` 可写（Linux：`chmod -R 755 storage`，个别主机需 `777`）
+2. 确保 `storage/`、`config/`、`install/` 可写（Linux：`chmod -R 755 storage config install`，个别主机需 `777`）
 3. 复制配置文件：`cp .env.example .env`
-4. 浏览器访问 `/install`，按向导填写数据库信息并创建管理员账号
+4. 浏览器访问 `/install`，按向导走完六步
 
-向导会自动完成建库、导入表结构和写入 `install/install.lock`。
+| 步骤 | 向导会做什么 |
+|:-----|:-------------|
+| 1 安装说明 | 展示环境要求与许可（`LICENSE` / `DISCLAIMER.md`） |
+| 2 环境检测 | 校验 **PHP ≥ 8.0**、扩展 `pdo` / `pdo_mysql` / `mbstring` / `json`（`redis`、`OPcache` 只提示不拦）、目录 `config/`、`storage/logs/`、`storage/cache/`、`storage/sessions/`、`install/` 是否可写 |
+| 3 数据库 | 收数据库连接信息，**自动建库**（账号需有建库权限，也可以事先建好库）并导入 39 张表 |
+| 4 管理员 | 创建管理员账号（bcrypt 哈希） |
+| 5 站点设置 | 写入站点名称、站点 URL 等配置 |
+| 6 完成 | 写 `install/install.lock` |
+
+> 🔁 **重装**：安装锁写入后，`/install` 只显示「系统已安装」提示。要重装请先删除
+> `install/install.lock`（并清空数据库），否则向导不会执行。
+>
+> 🧩 向导每一步都要求 CSRF token；htmx 提交时错误会以 200 + 页面内错误条渲染（不跳白页）。
+>
+> 🔍 想先自查环境：`php scripts/selftest_install.php`（102 项断言，不需要数据库）。
 
 ## 二、手动方式
 
@@ -118,6 +132,67 @@ php -S localhost:8000 -t public public/router.php
 
 > 反向代理（Nginx 终止 TLS 后转 php-fpm）部署时，请到 **后台 → 系统设置** 把反代 IP 填进 `trusted_proxies`：
 > 应用只信任这里显式列出的代理，否则限流、登录锁定、`admin_bind_ip` 都会因为无法区分真实客户端 IP 而失效。
+
+---
+
+## 三、虚拟机 / VPS / 云服务器部署
+
+**可以，而且这是最舒服的部署形态。** 一台 **1 核 1 GB** 的 Ubuntu / Debian 虚拟机（本地 VMware / VirtualBox / Hyper-V，或云上轻量服务器、VPS）就够中小社区使用：不需要 Docker、Composer / Node，也不需要任何常驻进程。只要有 PHP 8.0+、MySQL 5.6+ / MariaDB 10+、一个 Web 服务器。
+
+### 方式 1：主机面板（宝塔 / aaPanel / 1Panel 等）
+
+1. 新建站点，把**运行目录（网站根目录）设为 `public/`**，PHP 选 8.0+（推荐 8.2）
+2. 上传并解压项目代码到站点目录（或用面板的 Git 功能）
+3. 建数据库（MySQL 5.6+ / MariaDB 10+），复制 `.env.example` 为 `.env` 并填好 `DB_*`
+4. 访问 `http://你的域名/install`，走完六步向导（库也可以让向导建）
+
+### 方式 2：命令行 LEMP（Ubuntu 22.04 / 24.04 为例）
+
+```bash
+# 1. 依赖
+sudo apt update
+sudo apt install -y nginx mariadb-server git unzip \
+    php8.2-fpm php8.2-mysql php8.2-mbstring php8.2-xml php8.2-curl php8.2-gd php8.2-zip
+
+# 2. 代码：网站根目录必须指向 public/，storage/ 留在 Web 根之外
+sudo mkdir -p /var/www/amubbs && cd /var/www/amubbs
+sudo git clone https://github.com/mcwlgzs/AMuBBS.git .
+
+# 3. 配置与权限（向导会检测 config/、storage/*、install/ 是否可写）
+sudo cp .env.example .env
+sudo chown -R www-data:www-data /var/www/amubbs
+sudo find /var/www/amubbs -type d -exec chmod 755 {} \;
+sudo chmod 640 /var/www/amubbs/.env
+
+# 4. Nginx：抄仓库示例（含 /uploads/ 禁执行、静态缓存、隐藏文件兜底）
+sudo cp install/nginx.conf.example /etc/nginx/sites-available/amubbs   # 改 server_name 与 root
+sudo ln -s /etc/nginx/sites-available/amubbs /etc/nginx/sites-enabled/amubbs
+sudo nginx -t && sudo systemctl reload nginx
+sudo systemctl enable --now php8.2-fpm mariadb
+
+# 5. 建库
+sudo mariadb -e "CREATE DATABASE amubbs DEFAULT CHARSET utf8mb4 COLLATE utf8mb4_unicode_ci;"
+
+# 6. 打开 http://<虚拟机IP>/ 走向导；生产保持 APP_DEBUG=false
+```
+
+### 配置建议与常见坑
+
+| 规模 | CPU | 内存 | 磁盘 |
+|:-----|:----|:-----|:-----|
+| 个人 / 测试 | 1 核 | 1 GB | 10 GB |
+| 小社区（推荐起步） | 1–2 核 | 2 GB | 20 GB |
+| 中型社区 | 2–4 核 | 4 GB+ | 40 GB+ |
+
+1. **根目录指错**：站点根必须是 `public/`，不是项目根，否则 `.env`、`storage/`、`config/` 可能被直接下载。
+2. **目录不可写**：向导第 2 步会指出具体是哪个目录；把 `storage/`、`config/`、`install/` 交给 PHP-FPM 运行用户（`www-data`）。
+3. **端口没放行**：云主机在控制台安全组放行 80 / 443；本地虚拟机网卡建议桥接，否则局域网访问不到。
+4. **没配 HTTPS**：`sudo apt install certbot python3-certbot-nginx && sudo certbot --nginx`，并把 `.env` 的 `APP_URL` 改成 `https://你的域名`。
+5. **可选的计划任务**（清理缓存/日志、补零头浏览量），不依赖常驻进程。密钥只走请求头
+   `X-Cron-Key`（`cron_key` 未配置时接口一律 403）：
+   `*/10 * * * * curl -fsS -H "X-Cron-Key: 后台设置的cron_key" "https://你的域名/cron/run" >/dev/null`
+
+> 完整版（含三种部署形态对比与更多命令）见仓库根目录 [README.md](../README.md) 的「部署到虚拟机 / VPS / 云服务器」。
 
 ---
 

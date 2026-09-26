@@ -220,9 +220,11 @@ $socialProviders = [
           <label class="layui-form-label">定时任务密钥</label>
           <div class="layui-input-block">
             <input type="text" name="cron_key" class="layui-input" maxlength="100"
-                   placeholder="留空不验证" value="<?= $sv('cron_key') ?>">
+                   placeholder="必填：留空则 /cron/run 一律返回 403" value="<?= $sv('cron_key') ?>">
             <div class="layui-word-aux" style="padding-left:0">
-              访问 <span class="layui-badge-rim">/cron/run?key=密钥</span> 触发定时任务。
+              定时任务用请求头 <span class="layui-badge-rim">X-Cron-Key: 密钥</span> 请求
+              <span class="layui-badge-rim">/cron/run</span> 触发。
+              密钥只认请求头、不认 URL 参数（避免密钥进访问日志与 Referer）。
             </div>
           </div>
         </div>
