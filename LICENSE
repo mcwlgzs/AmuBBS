@@ -1,51 +1,69 @@
-# AMuBBS 开源许可证
+MIT License
 
-版权所有 (c) 2024 AMuBBS
+Copyright (c) 2024-2026 AMuBBS (https://github.com/mcwlgzs/AmuBBS)
 
-**非商业使用许可**
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
 
-本程序（以下称为"软件"）仅授权给您用于非商业目的。在未获得版权所有者明确书面许可的情况下，禁止将本软件用于任何商业用途，包括但不限于：
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
 
-- 商业产品或服务的销售
-- 商业网站或应用的运营
-- 任何产生直接或间接经济收益的活动
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
 
-## 授权条款
+================================================================================
 
-在满足以下条件的前提下，您可以自由使用、修改和分发本软件：
+中文说明（以下内容不缩减 MIT 许可证授予的任何权利，只作澄清与补充）
 
-1. **非商业使用** - 本软件仅可用于个人学习、研究、非营利性目的
-2. **保留版权声明** - 分发时必须保留本许可证声明和版权信息
-3. **相同许可证** - 如果您修改并再分发本软件，改动部分必须采用相同许可证
+本程序（AMuBBS）采用 **MIT 许可证**：可自由使用、复制、修改、合并、发布、分发、
+再授权和/或销售，也可用于商业用途，只需在软件的所有副本或实质性部分中保留上述
+版权声明与本许可声明。
 
-## 商业授权
+## 补充免责声明：不对违法犯罪站点负责
 
-如需将本软件用于任何商业目的，必须事先获得版权所有者的书面授权许可。
+1. AMuBBS 是一个**通用的论坛程序**，只提供技术工具本身，不提供任何内容或运营服务；
+   作者与版权所有者不参与、也无法控制使用者如何使用本程序。
+2. **使用者使用本程序搭建、运营的任何违法违规（含违法犯罪）网站及其行为，与作者和
+   版权所有者无关**，作者与版权所有者不对此承担任何责任，包括但不限于：传播违法
+   信息、侵犯他人合法权益、诈骗、赌博、色情、非法交易、数据窃取等。
+3. 使用者应自行遵守其所在国家或地区的法律法规以及服务器托管地的法律要求；因违法
+   使用本程序而产生的一切法律责任与后果，均由使用者自行承担。
+4. 本程序按「原样」提供，不提供任何明示或暗示的担保（包括适销性、特定用途适用性、
+   非侵权保证）。在任何情况下，作者与版权所有者均不对因使用或无法使用本程序而产生的
+   任何索赔、损害或其他责任负责。
+5. 作者与版权所有者有权拒绝为违法或不当的使用者提供技术支持。
 
-联系作者获取商业授权：https://github.com/mcwlgzs/AmuBBS
+## 第三方组件
 
-## 免责声明
+`public/assets/vendor/` 下的 layui、layuimini、Font Awesome、htmx 等第三方组件遵循
+其各自的许可证（清单见 `public/assets/vendor/VERSIONS.txt`），本许可证不改变这些
+组件原有的许可条款。
 
-本软件按"原样"提供，不提供任何明示或暗示的保证，包括但不限于：
-- 适销性保证
-- 特定用途适用性保证
-- 非侵权保证
+================================================================================
 
-在任何情况下，版权所有者均不对因使用本软件而产生的任何索赔、损害或损失负责。
+English Summary
 
----
+The Software is licensed under the MIT License above (commercial use, modification and
+redistribution are permitted; keep the copyright and permission notice). In addition, and
+without narrowing any permission granted by the MIT License, the authors and copyright
+holders:
 
-**AMuBBS License**
+- provide a general-purpose forum program only, and do not operate or control any site
+  built with it;
+- are NOT responsible or liable for any illegal or criminal use of the Software, including
+  any website built or operated with it that violates applicable law (unlawful content,
+  fraud, gambling, infringement, etc.);
+- disclaim all warranties and all liability for damages, to the maximum extent permitted
+  by applicable law.
 
-Copyright (c) 2024 AMuBBS
-
-This software is provided for non-commercial use only. Commercial use is prohibited without prior written permission from the copyright owner.
-
-Permission is hereby granted, free of charge, to any person obtaining a copy of this software, to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, subject to the following conditions:
-
-1. The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
-2. Commercial use is NOT permitted without prior written authorization from the copyright owner.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
-
-For commercial licensing, please contact the author.
+Users are solely responsible for complying with the laws applicable to them and to their
+hosting provider.

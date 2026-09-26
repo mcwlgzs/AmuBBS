@@ -8,6 +8,7 @@
 [![MySQL 5.6+](https://img.shields.io/badge/MySQL-5.6%2B-4479A1?style=for-the-badge&logo=mysql&logoColor=white)](https://mysql.com)
 [![Redis Optional](https://img.shields.io/badge/Redis-Optional-DC382D?style=for-the-badge&logo=redis&logoColor=white)](https://redis.io)
 [![License MIT](https://img.shields.io/badge/License-MIT-green?style=for-the-badge)](./LICENSE)
+[![Disclaimer](https://img.shields.io/badge/Illegal%20Use-Not%20Our%20Responsibility-orange?style=for-the-badge)](./LICENSE)
 
 [中文](./README.md) | English
 
@@ -324,8 +325,16 @@ All features have been completed!
 
 ### License
 
-**Non-commercial use only** — see [LICENSE](./LICENSE). Commercial use requires written permission;
-you may not remove the copyright notice.
+**MIT License** — see [LICENSE](./LICENSE). Commercial use, modification, redistribution and
+private deployment are allowed; just keep the copyright and permission notice.
+Bundled third-party assets (layui / layuimini / Font Awesome / htmx) keep their own licenses —
+see [`public/assets/vendor/VERSIONS.txt`](./public/assets/vendor/VERSIONS.txt).
+
+> **Additional disclaimer:** the Software is a general-purpose forum program provided "as is".
+> The authors and copyright holders do **not** operate or control any site built with it, and
+> are **not responsible or liable for any illegal or criminal use** — including any website
+> built or operated with this Software that violates applicable law. That responsibility rests
+> solely with the operator.
 
 ---
 

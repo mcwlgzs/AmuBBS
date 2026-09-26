@@ -9,8 +9,8 @@
 [![Redis 可选](https://img.shields.io/badge/Redis-Optional-DC382D?style=for-the-badge&logo=redis&logoColor=white)](https://redis.io)
 [![htmx](https://img.shields.io/badge/htmx-2.x-3D72D7?style=for-the-badge)](https://htmx.org)
 [![Layui](https://img.shields.io/badge/Layui-2.6.3-16baaa?style=for-the-badge)](https://layui.dev)
-[![License](https://img.shields.io/badge/License-Proprietary-red?style=for-the-badge)](./LICENSE)
-[![Commercial Use](https://img.shields.io/badge/Commercial-Forbidden-red?style=for-the-badge)](./LICENSE)
+[![License](https://img.shields.io/badge/License-MIT-green?style=for-the-badge)](./LICENSE)
+[![Disclaimer](https://img.shields.io/badge/Illegal%20Use-Not%20Our%20Responsibility-orange?style=for-the-badge)](./LICENSE)
 
 中文 | [English](./README.en.md)
 
@@ -686,12 +686,15 @@ powershell scripts/verify.ps1   # Windows
 
 ## 📄 开源协议
 
-**非商业使用许可证** — 详情请阅读 [LICENSE](./LICENSE)
+**MIT 许可证** — 详情请阅读 [LICENSE](./LICENSE)
 
-- ✅ 免费用于个人学习、研究、非营利性目的
-- ✅ 可以修改和再分发
-- ❌ **禁止任何商业用途**（需获得授权）
-- ❌ 禁止去除版权声明
+- ✅ 允许商用、修改、分发、再授权、私有部署
+- ✅ 只需保留版权声明与许可声明
+- ✅ 第三方组件（layui / layuimini / Font Awesome / htmx）遵循各自许可，清单见
+  [`public/assets/vendor/VERSIONS.txt`](./public/assets/vendor/VERSIONS.txt)
+- ⚠️ **补充免责声明**：本程序只提供技术工具本身，按「原样」提供；使用者使用本程序
+  搭建、运营的**任何违法违规（含违法犯罪）网站及其行为，与作者和版权所有者无关**，
+  作者不对此承担任何责任，相关法律责任与后果由使用者自行承担。
 
 ---
 
