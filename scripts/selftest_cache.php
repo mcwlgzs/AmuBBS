@@ -161,21 +161,25 @@ Cache::delete('selftest:incttl_exp');
 // 过期时间会随每个请求往后推，只要用户一直在点（窗口内总有请求）
 // 计数就永远不过期 —— 线上表现是限流一旦触发再也解不开，一直弹「请求过于频繁」。
 // 上面那条「不再递增时会过期」的断言覆盖不到这种情况（那次睡眠已经真的过期了）。
+// 窗口取 5 秒、窗口内每 0.2 秒递增一次：前 4 次只到 t≈0.6s，离窗口边界还有 4 秒余量，
+// 机器再忙也不会误判；最后一次先睡 5.5 秒，确保一定跨过窗口，必然重置。
+// （原来用 ttl=2s + sleep(1) 顶在边界上，机器一忙就偶发失败——那是测试写法的问题。）
 Cache::delete('selftest:fixedwin');
 $fixedWin = [];
 for ($i = 0; $i < 4; $i++) {
-    $fixedWin[] = Cache::increment('selftest:fixedwin', 1, 2);  // ttl=2s，每秒递增一次
+    $fixedWin[] = Cache::increment('selftest:fixedwin', 1, 5);
     if ($i < 3) {
-        sleep(1);
+        usleep(200000);  // 0.2s
     }
 }
-// t=0/1/2 落在同一个 2s 窗口内 -> 1,2,3；t=3 时窗口已到期 -> 重新从 1 开始
+// t≈0.6s 时窗口仍在 -> 1,2,3,4；睡满 5.5s 后窗口已到期 -> 重新从 1 开始
+sleep(6);
+$fixedWin[] = Cache::increment('selftest:fixedwin', 1, 5);
 check(
     'TTL 递增是固定窗口（窗口内递增不把过期时间推后）',
-    $fixedWin === [1, 2, 3, 1],
-    '实际: ' . implode(',', $fixedWin) . '（会后移的写法得到 1,2,3,4）'
+    $fixedWin === [1, 2, 3, 4, 1],
+    '实际: ' . implode(',', $fixedWin) . '（每次递增都重写过期时间的写法得到 1,2,3,4,5）'
 );
-Cache::delete('selftest:fixedwin');
 Cache::delete('selftest:fixedwin');
 
 // ---------------------------------------------------------------
