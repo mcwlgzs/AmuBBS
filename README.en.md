@@ -330,7 +330,8 @@ private deployment are allowed; just keep the copyright and permission notice.
 Bundled third-party assets (layui / layuimini / Font Awesome / htmx) keep their own licenses —
 see [`public/assets/vendor/VERSIONS.txt`](./public/assets/vendor/VERSIONS.txt).
 
-> **Additional disclaimer:** the Software is a general-purpose forum program provided "as is".
+> **Additional disclaimer** (see [DISCLAIMER.md](./DISCLAIMER.md); it does not narrow any right
+> granted by the MIT License): the Software is a general-purpose forum program provided "as is".
 > The authors and copyright holders do **not** operate or control any site built with it, and
 > are **not responsible or liable for any illegal or criminal use** — including any website
 > built or operated with this Software that violates applicable law. That responsibility rests

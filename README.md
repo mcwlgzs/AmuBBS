@@ -692,9 +692,10 @@ powershell scripts/verify.ps1   # Windows
 - ✅ 只需保留版权声明与许可声明
 - ✅ 第三方组件（layui / layuimini / Font Awesome / htmx）遵循各自许可，清单见
   [`public/assets/vendor/VERSIONS.txt`](./public/assets/vendor/VERSIONS.txt)
-- ⚠️ **补充免责声明**：本程序只提供技术工具本身，按「原样」提供；使用者使用本程序
-  搭建、运营的**任何违法违规（含违法犯罪）网站及其行为，与作者和版权所有者无关**，
-  作者不对此承担任何责任，相关法律责任与后果由使用者自行承担。
+- ⚠️ **补充免责声明**（见 [DISCLAIMER.md](./DISCLAIMER.md)，不缩减 MIT 授予的任何权利）：
+  本程序只提供技术工具本身，按「原样」提供；使用者使用本程序搭建、运营的**任何违法
+  违规（含违法犯罪）网站及其行为，与作者和版权所有者无关**，作者不对此承担任何责任，
+  相关法律责任与后果由使用者自行承担。
 
 ---
 
