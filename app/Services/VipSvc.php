@@ -1,8 +1,11 @@
 <?php
 namespace App\Services;
 
-use Core\Database;
+use App\Models\CreditLog;
+use App\Models\User;
+use App\Models\UserVip;
 use Core\Cache;
+use Core\Database;
 
 /**
  * VIP 会员服务
@@ -63,6 +66,20 @@ class VipSvc
     }
 
     /**
+     * 报价：某等级买 N 个月需要多少积分
+     *
+     * 页面上的实时预览和实际扣费共用这一份价格表，避免两处各算一遍导致对不上。
+     */
+    public static function quoteCost(int $level, int $months): int
+    {
+        $config = self::getConfig();
+        if (!isset($config[$level])) {
+            return 0;
+        }
+        return (int)$config[$level]['price'] * max(1, $months);
+    }
+
+    /**
      * 获取用户 VIP 信息（带缓存）
      */
     public static function getUserVip(int $userId): array
@@ -70,10 +87,7 @@ class VipSvc
         return Cache::get("vip:user:{$userId}", function() use ($userId) {
             $config = self::getConfig();
             try {
-                $row = Database::fetchOne(
-                    "SELECT * FROM user_vip WHERE user_id = ? AND expire_at > ? ORDER BY vip_level DESC LIMIT 1",
-                    [$userId, time()]
-                );
+                $row = UserVip::activeFor($userId, time());
             } catch (\Throwable $e) {
                 $row = null;
             }
@@ -121,40 +135,31 @@ class VipSvc
         Database::beginTransaction();
         try {
             // 原子扣减积分
-            $affected = Database::execute(
-                "UPDATE users SET credits = credits - ? WHERE id = ? AND credits >= ?",
-                [$totalPrice, $userId, $totalPrice]
-            );
-            if ($affected === 0) {
+            if (User::deductCreditsIfEnough($userId, $totalPrice) === 0) {
                 throw new \RuntimeException('积分不足，需要 ' . $totalPrice . ' 积分');
             }
-            $balance = Database::fetchOne("SELECT credits FROM users WHERE id = ?", [$userId])['credits'] ?? 0;
-            Database::execute(
-                "INSERT INTO credit_logs (user_id, amount, balance, type, description, created_at) VALUES (?, ?, ?, ?, ?, ?)",
-                [$userId, -$totalPrice, $balance, 'vip', "购买{$info['name']} {$months}个月", time()]
-            );
+            $now = time();
+            CreditLog::write($userId, -$totalPrice, User::getCredits($userId), 'vip', "购买{$info['name']} {$months}个月", '', 0, $now);
 
             // 查询现有 VIP（加锁防止并发购买）
-            $existing = Database::fetchOne(
-                "SELECT * FROM user_vip WHERE user_id = ? AND vip_level = ? AND expire_at > ? FOR UPDATE",
-                [$userId, $level, time()]
-            );
+            $existing = UserVip::lockActive($userId, $level, $now);
 
             $duration = $months * 30 * 86400;
-            $newExpire = 0;
+            $newExpire = $now + $duration;
 
             if ($existing) {
+                // 同等级未过期 → 续费延长
                 $newExpire = (int)$existing['expire_at'] + $duration;
-                Database::execute(
-                    "UPDATE user_vip SET expire_at = ?, updated_at = ? WHERE id = ?",
-                    [$newExpire, time(), $existing['id']]
-                );
+                UserVip::extend((int)$existing['id'], $newExpire, $now);
+            } elseif ($row = UserVip::lockByUser($userId)) {
+                // user_id 唯一：已有「已过期」或「别的等级」的行时不能 INSERT，
+                // 直接复用该行改写等级与到期时间（否则必然撞 uk_user_vip 唯一键）。
+                // 剩余时间不没收：以「未过期的到期时间」或「现在」为基准再叠加购买的时长。
+                $base = max((int)$row['expire_at'], $now);
+                $newExpire = $base + $duration;
+                UserVip::switchLevel((int)$row['id'], $level, $newExpire, $now);
             } else {
-                $newExpire = time() + $duration;
-                Database::execute(
-                    "INSERT INTO user_vip (user_id, vip_level, expire_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
-                    [$userId, $level, $newExpire, time(), time()]
-                );
+                UserVip::create($userId, $level, $newExpire, $now);
             }
             Database::commit();
         } catch (\RuntimeException $e) {

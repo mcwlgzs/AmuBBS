@@ -27,6 +27,16 @@ return [
     // URL 配置
     'url' => env('APP_URL', 'http://localhost:8000'),
 
+    // Session 配置
+    'session' => [
+        // file | redis（redis 不可用时自动回退到 file）
+        'driver' => env('SESSION_DRIVER', 'file'),
+        'lifetime' => (int) env('SESSION_LIFETIME', 7200),
+        'redis_db' => (int) env('SESSION_REDIS_DB', 1),
+        // 文件 Session 存放目录：放应用自己目录里，比系统临时目录可靠
+        'path' => env('SESSION_FILE_PATH', APP_PATH . 'storage/sessions/'),
+    ],
+
     // 路径配置
     'paths' => [
         'log' => APP_PATH . 'storage/logs/',

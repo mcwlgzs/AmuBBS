@@ -1,134 +1,175 @@
 # AMuBBS 安装指南
 
-## 快速安装
+## 环境要求
 
-### 1. 导入数据库
+| 软件 | 最低版本 | 说明 |
+|:-----|:---------|:-----|
+| PHP | 8.0 | 只用 `str_starts_with` / `match` 等 8.0 特性；8.1 / 8.2 均可 |
+| MySQL | 5.6 | 或 MariaDB 10.0+；**不要求 MySQL 8** |
+| Redis | 不需要 | 可选。没有 Redis 时自动使用文件缓存 |
+| Web 服务器 | 任意 | Nginx / Apache / 共享虚拟主机 / PHP 内置服务器 |
 
-```bash
-# 创建数据库
-mysql -u root -p -e "CREATE DATABASE amubbs DEFAULT CHARSET utf8mb4 COLLATE utf8mb4_unicode_ci;"
+**必须开启的 PHP 扩展**：`pdo_mysql`、`mbstring`、`json`
 
-# 导入数据表
-mysql -u root -p amubbs < install/database.sql
-```
+**可选扩展**：`redis`（有则自动启用）、`opcache`（提速）、`gd`（图片处理）、`zip`（备份）
 
-### 2. 配置数据库连接
+**不需要**：Composer、npm / Node、root 权限、shell 访问、常驻进程、cron
 
-编辑 `config/database.php`，修改数据库连接信息：
+---
 
-```php
-'connections' => [
-    'mysql' => [
-        'host' => '127.0.0.1',
-        'port' => 3306,
-        'database' => 'amubbs',
-        'username' => 'root',
-        'password' => 'your_password',  // 修改为你的密码
-    ],
-],
-```
+## 一、推荐方式：安装向导
 
-### 3. 配置 Redis
+1. 将 **`public/` 目录**设为网站根目录（`storage/` 必须在 Web 根目录之外）
+2. 确保 `storage/` 可写（Linux：`chmod -R 755 storage`，个别主机需 `777`）
+3. 复制配置文件：`cp .env.example .env`
+4. 浏览器访问 `/install`，按向导填写数据库信息并创建管理员账号
 
-编辑 `config/cache.php`，确认 Redis 连接信息：
+向导会自动完成建库、导入表结构和写入 `install/install.lock`。
 
-```php
-'redis' => [
-    'host' => '127.0.0.1',
-    'port' => 6379,
-    'password' => '',  // 如果有密码，填写这里
-    'database' => 0,
-],
-```
+## 二、手动方式
 
-### 4. 启动服务
+### 1. 创建数据库并导入表结构
 
 ```bash
-# 进入项目目录
-cd C:\Users\mc\Downloads\amubbs
-
-# 启动 PHP 内置服务器
-php -S localhost:8000 -t public
+mysql -u 用户名 -p -e "CREATE DATABASE amubbs DEFAULT CHARSET utf8mb4 COLLATE utf8mb4_unicode_ci;"
+mysql -u 用户名 -p amubbs < install/database.sql
 ```
 
-### 5. 访问网站
+> 主库脚本**刻意不包含 FULLTEXT 索引**。因为 MySQL 5.5 及部分共享主机不支持 InnoDB FULLTEXT，
+> 一旦写在 `CREATE TABLE` 里会导致整条建表语句失败、安装中断。
+> 移除后，MySQL 5.6+ / MariaDB 10+ 都能顺利安装。
 
-打开浏览器访问：http://localhost:8000
+### 2. 可选：补上全文索引（建议）
 
-你应该看到 AMuBBS 首页，包含：
-- 板块列表（5个初始板块）
-- 统计信息
-- 性能指标
+```bash
+mysql -u 用户名 -p amubbs < install/optional_fulltext.sql
+```
+
+执行后**英文/数字关键词**搜索会走全文索引，明显更快。
+不执行也完全可用，搜索会自动回退 `LIKE`。
+
+> 中文关键词无论如何都会走 `LIKE`：InnoDB 默认分词器对 CJK 支持很差，
+> 会把一段中文切成极少的 token，导致 `MATCH...AGAINST` 静默漏掉结果（且不报错）。
+
+### 3. 配置 `.env`
+
+```ini
+DB_HOST=127.0.0.1
+DB_PORT=3306
+DB_DATABASE=amubbs
+DB_USERNAME=root
+DB_PASSWORD=你的密码
+DB_CHARSET=utf8mb4
+
+# 缓存驱动：auto（推荐）| file | redis
+CACHE_DRIVER=auto
+
+# Session：共享主机建议用 file
+SESSION_DRIVER=file
+```
+
+`CACHE_DRIVER=auto` 的行为：探测到 Redis 就用 Redis，否则自动使用 `storage/cache/` 文件缓存，
+两者都不可用时退化为进程内缓存，**任何情况都不会因为缓存问题白屏**。
+
+> 缓存目录默认 `storage/cache/`，可用 `CACHE_FILE_PATH` 改到站点目录之外。
+
+### 4. 创建安装锁
+
+```bash
+echo "installed" > install/install.lock
+```
+
+不创建该文件时，所有请求都会被重定向到 `/install` 安装向导。
+
+### 5. 创建管理员
+
+可用安装向导，或直接写库（密码需为 bcrypt 哈希）：
+
+```sql
+INSERT INTO users (id, username, email, password, group_id, credits, created_at, updated_at)
+VALUES (1, 'admin', 'admin@example.com', '<bcrypt hash>', 3, 0, UNIX_TIMESTAMP(), UNIX_TIMESTAMP());
+```
+
+`group_id = 3` 即管理员组。
+
+### 6. 启动
+
+```bash
+# 开发环境（PHP 内置服务器）
+php -S localhost:8000 -t public public/router.php
+
+# 生产环境：把 public/ 指向 Nginx / Apache 站点根目录
+```
+
+访问 `http://localhost:8000`。
+
+### 7. 生产环境：Web 服务器与 PHP 配置
+
+仓库里直接给了两份可抄的配置，**不用自己从零写**：
+
+| 文件 | 用途 |
+| --- | --- |
+| `install/nginx.conf.example` | Nginx 站点配置：docroot=public/、上传目录禁止执行脚本、静态资源缓存/压缩、隐藏文件兜底 |
+| `install/php.ini.example` | 推荐的 php.ini：OPcache（未开时首页冷渲染 p50 ≈ 39ms）、Session GC 与 `SESSION_LIFETIME` 对齐、上传/超时、生产环境关闭 display_errors |
+| `public/.htaccess` | Apache / 共享虚拟主机版（mod_rewrite + mod_expires + mod_deflate） |
+| `public/uploads/.htaccess` | 上传目录禁止脚本解析（Apache 专用，Nginx 见上面示例的 `location ^~ /uploads/`） |
+
+用 `./deploy.sh [远程IP]` 部署时脚本会：同步代码 → 把 `storage/` 设成 750/640（**不是 -R 755**，否则会话文件全机可读）→ reload php-fpm → 调 `/health` 校验（非 200 直接失败）。
+
+> 反向代理（Nginx 终止 TLS 后转 php-fpm）部署时，请到 **后台 → 系统设置** 把反代 IP 填进 `trusted_proxies`：
+> 应用只信任这里显式列出的代理，否则限流、登录锁定、`admin_bind_ip` 都会因为无法区分真实客户端 IP 而失效。
+
+---
 
 ## 已初始化的数据
 
-### 用户组
-- 普通用户（ID: 1）
-- 版主（ID: 2）
-- 管理员（ID: 3）
-
-### 板块
-- 站务管理
-- 技术讨论
-  - PHP
-  - JavaScript
-- 灌水乐园
-
-### 系统配置
-- 站点名称：AMuBBS
-- 站点状态：5（所有人可读写）
-- 站点描述：基于 PHP 8.2 的轻量化论坛系统
+- **用户组**：普通用户(1)、版主(2)、管理员(3)、待验证用户(4)、禁止用户组(5)
+- **板块**：站务管理、技术讨论（PHP / JavaScript）、灌水乐园
+- **配置**：站点名称 AMuBBS，站点状态 5（所有人可读写）
 
 ## 站点状态说明
 
-参考 Xiuno BBS 的设计，站点状态配置：
+参考 Xiuno BBS 设计，`settings` 表的 `site_status`：
 
-- **0**: 站点关闭
-- **1**: 管理员可读写
-- **2**: 会员可读
-- **3**: 会员可读写
-- **4**: 所有人只读
-- **5**: 所有人可读写（默认）
+| 值 | 含义 |
+|:--|:--|
+| 0 | 站点关闭 |
+| 1 | 管理员可读写 |
+| 2 | 会员可读 |
+| 3 | 会员可读写 |
+| 4 | 所有人只读 |
+| 5 | 所有人可读写（默认） |
 
-可以在数据库 `settings` 表中修改 `site_status` 的值。
+---
 
 ## 故障排查
 
 ### 数据库连接失败
-```bash
-# 检查 MySQL 是否运行
-mysql -u root -p -e "SELECT 1"
 
-# 检查数据库是否存在
-mysql -u root -p -e "SHOW DATABASES LIKE 'amubbs'"
+```bash
+mysql -u 用户名 -p -e "SELECT 1"                 # MySQL 是否在跑
+mysql -u 用户名 -p -e "SHOW DATABASES LIKE 'amubbs'"
 ```
 
-### Redis 连接失败
-```bash
-# 检查 Redis 是否运行
-redis-cli ping
+确认 `.env` 里的 `DB_*` 与实际一致。注意：**`.env` 是唯一生效处**，不要再改 `config/database.php`。
 
-# 应该返回 PONG
+### 缓存目录不可写
+
+页面能开但性能差，日志出现 `[Cache] 缓存目录不可写` 时：
+
+```bash
+chmod -R 755 storage        # 个别共享主机需要 777
 ```
 
-### 页面显示空白
-```bash
-# 检查 PHP 错误日志
-tail -f /var/log/php_errors.log
+### 搜索没有结果
 
-# 或者在浏览器中查看源代码，看是否有 PHP 错误
-```
+- 中文短词/部分词查不到：属预期内的分词限制，中文一律走 `LIKE`
+- 英文短词（少于 3 个字符）查不到：InnoDB 全文索引有最小分词长度（默认 3），此时会自动回退 `LIKE`
 
-## 下一步
+### 页面空白
 
-安装完成后，你可以：
-
-1. 创建管理员账号（待开发）
-2. 发布第一个帖子（待开发）
-3. 配置站点信息（待开发）
-4. 安装插件（待开发）
+打开 `APP_DEBUG=true` 后重试，或查看 PHP 错误日志与 `storage/logs/`。
 
 ---
 
 **当前版本**: v0.1.0
-**安装日期**: 2026-02-22

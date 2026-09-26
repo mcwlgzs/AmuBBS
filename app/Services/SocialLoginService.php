@@ -6,6 +6,8 @@
 
 namespace App\Services;
 
+use App\Models\SocialLogin;
+use App\Models\User;
 use Core\Database;
 
 class SocialLoginService
@@ -131,13 +133,17 @@ class SocialLoginService
             $userId = self::findOrCreateUser($provider, $userInfo);
             
             // 获取用户完整信息
-            $user = Database::fetchOne("SELECT * FROM users WHERE id = ?", [$userId]);
+            $user = User::findByIdFresh($userId);
             
             if (!$user) {
                 return ['success' => false, 'error' => '用户不存在'];
             }
             
-            // 设置 session
+            // 设置 session —— 与账号密码登录一致：先防会话固定攻击（session_regenerate_id），
+            // 否则攻击者可以先拿到一个已知 SID，再诱导受害者完成第三方登录来「借用」该会话。
+            if (session_status() === PHP_SESSION_ACTIVE && !headers_sent()) {
+                session_regenerate_id(true);
+            }
             $_SESSION['user_id'] = $user['id'];
             $_SESSION['username'] = $user['username'];
             $_SESSION['group_id'] = $user['group_id'];
@@ -224,17 +230,11 @@ class SocialLoginService
     public static function findOrCreateUser(string $provider, array $userInfo): int
     {
         // 查找已关联的用户
-        $social = Database::fetchOne(
-            "SELECT * FROM social_logins WHERE provider = ? AND open_id = ?",
-            [$provider, $userInfo['open_id']]
-        );
-        
+        $social = SocialLogin::findByProvider($provider, (string)$userInfo['open_id']);
+
         if ($social) {
             // 更新社交账号信息
-            Database::execute(
-                "UPDATE social_logins SET nickname = ?, avatar = ? WHERE id = ?",
-                [$userInfo['nickname'], $userInfo['avatar'], $social['id']]
-            );
+            SocialLogin::updateProfile((int)$social['id'], (string)$userInfo['nickname'], (string)$userInfo['avatar']);
             return (int)$social['user_id'];
         }
         
@@ -250,34 +250,24 @@ class SocialLoginService
             $defaultCredits = SettingSvc::getInt('user_default_credits', 0);
             $hashedPassword = password_hash(bin2hex(random_bytes(16)), PASSWORD_BCRYPT); // 随机密码
             
-            Database::execute(
-                "INSERT INTO users (username, email, password, group_id, credits, nickname, avatar, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                [
-                    $username,
-                    $userInfo['email'] ?? '',
-                    $hashedPassword,
-                    $defaultGroup,
-                    $defaultCredits,
-                    $userInfo['nickname'],
-                    $userInfo['avatar'],
-                    time(),
-                    time(),
-                ]
+            $userId = User::createFromSocial(
+                $username,
+                (string)($userInfo['email'] ?? ''),
+                $hashedPassword,
+                $defaultGroup,
+                $defaultCredits,
+                (string)$userInfo['nickname'],
+                (string)$userInfo['avatar']
             );
             
-            $userId = (int)Database::lastInsertId();
-            
             // 创建社交登录关联
-            Database::execute(
-                "INSERT INTO social_logins (user_id, provider, open_id, nickname, avatar, created_at) VALUES (?, ?, ?, ?, ?, ?)",
-                [
-                    $userId,
-                    $provider,
-                    $userInfo['open_id'],
-                    $userInfo['nickname'],
-                    $userInfo['avatar'],
-                    time(),
-                ]
+            SocialLogin::create(
+                $userId,
+                $provider,
+                (string)$userInfo['open_id'],
+                (string)$userInfo['nickname'],
+                (string)$userInfo['avatar'],
+                time()
             );
             
             Database::commit();
@@ -306,7 +296,7 @@ class SocialLoginService
         $username = $base;
         $counter = 1;
         
-        while (Database::fetchOne("SELECT id FROM users WHERE username = ?", [$username])) {
+        while (User::usernameExists($username)) {
             $username = $base . '_' . $counter;
             $counter++;
         }

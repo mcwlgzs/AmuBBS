@@ -1,6 +1,9 @@
 <?php
 namespace App\Controllers;
 
+use App\Models\User;
+use App\Services\VipSvc;
+
 class Vip extends Base
 {
     /**
@@ -8,7 +11,7 @@ class Vip extends Base
      */
     public function index(): void
     {
-        $vipEnabled = \App\Services\VipSvc::isEnabled();
+        $vipEnabled = VipSvc::isEnabled();
         if (!$vipEnabled) {
             $this->render('user/vip', [
                 'vipEnabled' => false,
@@ -19,14 +22,13 @@ class Vip extends Base
             return;
         }
 
-        $levels = \App\Services\VipSvc::getLevels();
+        $levels = VipSvc::getLevels();
         $userVip = null;
         $userCredits = 0;
 
         if ($this->isLoggedIn()) {
-            $userVip = \App\Services\VipSvc::getUserVip($this->getCurrentUserId());
-            $user = \Core\Database::fetchOne("SELECT credits FROM users WHERE id = ?", [$this->getCurrentUserId()]);
-            $userCredits = (int)($user['credits'] ?? 0);
+            $userVip = VipSvc::getUserVip($this->getCurrentUserId());
+            $userCredits = User::getCredits($this->getCurrentUserId());
         }
 
         $this->render('user/vip', [
@@ -38,30 +40,51 @@ class Vip extends Base
     }
 
     /**
+     * 报价片段（htmx）
+     *
+     * 选择等级 / 时长后实时显示需要多少积分，由服务端算，
+     * 页面侧不用再塞一份价格表到 JS 里（原来的 vipApp().prices 就是这么干的）。
+     */
+    public function quote(): void
+    {
+        $level = (int)($_GET['level'] ?? 0);
+        $months = max(1, min(12, (int)($_GET['months'] ?? 1)));
+
+        $this->render('user/_vip_quote', [
+            'level'  => $level,
+            'months' => $months,
+            'cost'   => VipSvc::quoteCost($level, $months),
+        ]);
+    }
+
+    /**
      * 购买 VIP
      */
     public function purchase(): void
     {
         $this->requireLogin();
 
-        if (!\App\Services\VipSvc::isEnabled()) {
-            $this->error('VIP 功能暂未开放');
+        if (!VipSvc::isEnabled()) {
+            $this->respondRefresh(false, 'VIP 功能暂未开放');
             return;
         }
 
-        $level = (int)($_POST['level'] ?? 0);
-        $months = (int)($_POST['months'] ?? 1);
+        $input = $this->input();
+        $level = (int)($input['level'] ?? 0);
+        $months = (int)($input['months'] ?? 1);
         if ($months < 1 || $months > 12) {
-            $this->error('购买月数必须在 1-12 之间');
+            $this->respondRefresh(false, '购买月数必须在 1-12 之间');
             return;
         }
 
         try {
-            $result = \App\Services\VipSvc::purchase($this->getCurrentUserId(), $level, $months);
-            $this->success("成功开通{$result['name']}，花费 {$result['cost']} 积分");
+            $result = VipSvc::purchase($this->getCurrentUserId(), $level, $months);
         } catch (\RuntimeException $e) {
-            $this->error($e->getMessage());
+            $this->respondRefresh(false, $e->getMessage());
             return;
         }
+
+        // 开通后积分、等级卡片、当前 VIP 状态都要跟着变，整页刷新最省事
+        $this->respondRefresh(true, "成功开通{$result['name']}，花费 {$result['cost']} 积分");
     }
 }

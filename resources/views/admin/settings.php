@@ -1,566 +1,590 @@
-<?php include __DIR__ . '/layout_child.php'; ?>
+<?php
+/**
+ * 后台 - 系统设置（layuimini 子页面 / layui 标签页表单）
+ *
+ * 变量：$settings, $currentIp, $captchaScenes
+ *
+ * 与旧版（Bootstrap + htmx）的区别只在「外观 + 提交方式」：
+ *   1. 标签页改用 layui 的 element 标签（layui-tab-brief），六个页签一个不少；
+ *   2. 开关改用 layui 的 lay-skin="switch"，隐藏的 =0 伴生字段原样保留；
+ *   3. 提交走 form.on('submit(...)') + $(form).serialize() 后 POST 到 /admin/settings，
+ *      由 AdminUi.post 统一带 CSRF 并处理 {code,msg}。
+ *
+ * ⚠️ 字段契约：每一个 name= / value= / checked 条件都必须与旧版逐字一致 ——
+ *    这些字段直接写进站点配置，改名就等于静默丢数据。
+ *    本页面共 52 个 name= 属性（其中 4 个是社交登录循环模板里的 2 个，
+ *    4 个 captcha_scene_* 由循环展开），迁移前后数量必须相同。
+ *
+ * 开关字段（12 个）：hidden=0 + checkbox=1 成对出现，未勾选也会提交 "0"，
+ * 服务端据此把开关关掉，不再依赖前端 JS 补 false。
+ */
 
-<div class="layui-card">
-    <div class="layui-card-header">站点设置</div>
-    <div class="layui-card-body">
+$settings = is_array($settings ?? null) ? $settings : [];
+$currentIp = (string)($currentIp ?? '');
+$captchaScenes = is_array($captchaScenes ?? null) ? $captchaScenes : ['register', 'login', 'thread', 'reply'];
 
-        <form class="layui-form" lay-filter="settingsForm" style="max-width:700px;">
+/** 取设置值（保留旧版默认值） */
+$sv = static function (string $key, string $default = '') use ($settings): string {
+    return htmlspecialchars((string)($settings[$key] ?? $default), ENT_QUOTES, 'UTF-8');
+};
 
-        <div class="layui-tab layui-tab-brief" lay-filter="settingsTab">
-            <ul class="layui-tab-title">
-                <li class="layui-this">基本设置</li>
-                <li>安全设置</li>
-                <li>上传设置</li>
-                <li>邮件设置</li>
-                <li>防灌水</li>
-                <li>功能设置</li>
-            </ul>
-            <div class="layui-tab-content">
+/** 开关是否勾选（按旧版默认值） */
+$on = static function (string $key, string $default) use ($settings): bool {
+    return (($settings[$key] ?? $default) === '1');
+};
 
-                <!-- Tab 1: 基本设置 -->
-                <div class="layui-tab-item layui-show">
-                    <div class="layui-form-item">
-                        <label class="layui-form-label">站点名称</label>
-                        <div class="layui-input-block">
-                            <input type="text" name="site_name" class="layui-input" value="<?= htmlspecialchars($settings['site_name'] ?? '') ?>">
-                        </div>
-                    </div>
-                    <div class="layui-form-item">
-                        <label class="layui-form-label">站点描述</label>
-                        <div class="layui-input-block">
-                            <input type="text" name="site_description" class="layui-input" value="<?= htmlspecialchars($settings['site_description'] ?? '') ?>">
-                        </div>
-                    </div>
-                    <div class="layui-form-item">
-                        <label class="layui-form-label">站点 URL</label>
-                        <div class="layui-input-block">
-                            <input type="text" name="site_url" class="layui-input" value="<?= htmlspecialchars($settings['site_url'] ?? '') ?>" placeholder="http://localhost:8000">
-                        </div>
-                    </div>
-                    <div class="layui-form-item">
-                        <label class="layui-form-label">站点关键词</label>
-                        <div class="layui-input-block">
-                            <input type="text" name="site_keywords" class="layui-input" value="<?= htmlspecialchars($settings['site_keywords'] ?? '') ?>" placeholder="用逗号分隔">
-                        </div>
-                    </div>
-                    <div class="layui-form-item">
-                        <label class="layui-form-label">ICP 备案号</label>
-                        <div class="layui-input-block">
-                            <input type="text" name="icp_number" class="layui-input" value="<?= htmlspecialchars($settings['icp_number'] ?? '') ?>" placeholder="可留空">
-                        </div>
-                    </div>
-                    <div class="layui-form-item">
-                        <label class="layui-form-label">CDN 地址</label>
-                        <div class="layui-input-block">
-                            <input type="text" name="cdn_url" class="layui-input" value="<?= htmlspecialchars($settings['cdn_url'] ?? '') ?>" placeholder="如 https://cdn.example.com（留空不启用）">
-                        </div>
-                    </div>
-                    <div class="layui-form-item">
-                        <label class="layui-form-label">运行级别</label>
-                        <div class="layui-input-block">
-                            <?php $runlevel = $settings['site_runlevel'] ?? '5'; ?>
-                            <select name="site_runlevel">
-                                <option value="5" <?= $runlevel == '5' ? 'selected' : '' ?>>完全开放（所有人可读写）</option>
-                                <option value="4" <?= $runlevel == '4' ? 'selected' : '' ?>>所有人只读（游客可浏览，禁止发帖回复）</option>
-                                <option value="3" <?= $runlevel == '3' ? 'selected' : '' ?>>仅注册用户可读写（游客不可访问）</option>
-                                <option value="2" <?= $runlevel == '2' ? 'selected' : '' ?>>注册用户只读（禁止发帖回复）</option>
-                                <option value="1" <?= $runlevel == '1' ? 'selected' : '' ?>>仅管理员（维护模式）</option>
-                                <option value="0" <?= $runlevel == '0' ? 'selected' : '' ?>>关站维护（所有人不可访问）</option>
-                            </select>
-                        </div>
-                    </div>
-                    <div class="layui-form-item">
-                        <label class="layui-form-label">维护提示</label>
-                        <div class="layui-input-block">
-                            <input type="text" name="site_maintenance_msg" class="layui-input" value="<?= htmlspecialchars($settings['site_maintenance_msg'] ?? '') ?>" placeholder="站点维护中，请稍后再访问...">
-                        </div>
-                    </div>
-                    <div class="layui-form-item">
-                        <label class="layui-form-label">每页主题数</label>
-                        <div class="layui-input-block">
-                            <input type="number" name="threads_per_page" class="layui-input" value="<?= htmlspecialchars($settings['threads_per_page'] ?? '20') ?>" min="5" max="100">
-                            <div class="layui-form-mid layui-word-aux">首页和帖子列表每页显示的主题数量（5-100）</div>
-                        </div>
-                    </div>
-                    <div class="layui-form-item">
-                        <label class="layui-form-label">公告隐藏时长</label>
-                        <div class="layui-input-block">
-                            <input type="number" name="announcement_hide_duration" class="layui-input" value="<?= htmlspecialchars($settings['announcement_hide_duration'] ?? '60') ?>" min="0">
-                            <div class="layui-form-mid layui-word-aux">关闭后隐藏时长（分钟），0 表示刷新后立即恢复</div>
-                        </div>
-                    </div>
-                    <div class="layui-form-item">
-                        <label class="layui-form-label">URL .html 后缀</label>
-                        <div class="layui-input-block">
-                            <input type="checkbox" name="url_html_suffix" lay-skin="switch" lay-text="开|关" <?= ($settings['url_html_suffix'] ?? '1') === '1' ? 'checked' : '' ?>>
-                            <div class="layui-form-mid layui-word-aux">开启后支持 .html 后缀访问（如 /thread/1.html）</div>
-                        </div>
-                    </div>
-                </div>
+/** 当前选中的值 */
+$sel = static function (string $key, string $default) use ($settings): string {
+    return (string)($settings[$key] ?? $default);
+};
 
-                <!-- Tab 2: 安全设置 -->
-                <div class="layui-tab-item">
-                    <div class="layui-form-item">
-                        <label class="layui-form-label">IP 白名单</label>
-                        <div class="layui-input-block">
-                            <input type="text" name="admin_bind_ip" class="layui-input" value="<?= htmlspecialchars($settings['admin_bind_ip'] ?? '') ?>" placeholder="留空不限制，多个IP用逗号分隔">
-                            <div class="layui-form-mid layui-word-aux">当前 IP：<?= htmlspecialchars($_SERVER['REMOTE_ADDR'] ?? '') ?></div>
-                        </div>
-                    </div>
-                    <div class="layui-form-item">
-                        <label class="layui-form-label">定时任务密钥</label>
-                        <div class="layui-input-block">
-                            <input type="text" name="cron_key" class="layui-input" value="<?= htmlspecialchars($settings['cron_key'] ?? '') ?>" placeholder="留空不验证">
-                            <div class="layui-form-mid layui-word-aux">访问 <code>/cron/run?key=密钥</code> 触发定时任务</div>
-                        </div>
-                    </div>
-                    <div class="layui-form-item">
-                        <label class="layui-form-label">启用验证码</label>
-                        <div class="layui-input-block">
-                            <input type="checkbox" name="captcha_enabled" lay-skin="switch" lay-text="开|关" lay-filter="captchaEnabled" <?= ($settings['captcha_enabled'] ?? '0') === '1' ? 'checked' : '' ?>>
-                        </div>
-                    </div>
-                    <div id="captchaFields" style="<?= ($settings['captcha_enabled'] ?? '0') !== '1' ? 'display:none;' : '' ?>">
-                        <div class="layui-form-item">
-                            <label class="layui-form-label">验证码类型</label>
-                            <div class="layui-input-block">
-                                <?php $captchaType = $settings['captcha_type'] ?? 'numeric'; ?>
-                                <select name="captcha_type">
-                                    <option value="numeric" <?= $captchaType === 'numeric' ? 'selected' : '' ?>>数字验证码</option>
-                                    <option value="alpha" <?= $captchaType === 'alpha' ? 'selected' : '' ?>>字母数字验证码</option>
-                                    <option value="slider" <?= $captchaType === 'slider' ? 'selected' : '' ?>>滑动拼图验证</option>
-                                </select>
-                            </div>
-                        </div>
-                        <div class="layui-form-item">
-                            <label class="layui-form-label">启用场景</label>
-                            <div class="layui-input-block">
-                                <?php $scenes = explode(',', $settings['captcha_scenes'] ?? ''); ?>
-                                <input type="checkbox" name="captcha_scene_register" title="注册" <?= in_array('register', $scenes) ? 'checked' : '' ?>>
-                                <input type="checkbox" name="captcha_scene_login" title="登录" <?= in_array('login', $scenes) ? 'checked' : '' ?>>
-                                <input type="checkbox" name="captcha_scene_thread" title="发帖" <?= in_array('thread', $scenes) ? 'checked' : '' ?>>
-                                <input type="checkbox" name="captcha_scene_reply" title="回复" <?= in_array('reply', $scenes) ? 'checked' : '' ?>>
-                            </div>
-                        </div>
-                    </div>
-                    <div class="layui-form-item" style="margin-top:20px;">
-                        <div class="layui-inline">
-                            <label class="layui-form-label">全局频率</label>
-                            <div class="layui-input-inline" style="width:100px;">
-                                <input type="number" name="rate_limit_global_max" class="layui-input" value="<?= htmlspecialchars($settings['rate_limit_global_max'] ?? '60') ?>" min="0">
-                            </div>
-                            <div class="layui-form-mid">次 /</div>
-                            <div class="layui-input-inline" style="width:100px;">
-                                <input type="number" name="rate_limit_global_window" class="layui-input" value="<?= htmlspecialchars($settings['rate_limit_global_window'] ?? '60') ?>" min="1">
-                            </div>
-                            <div class="layui-form-mid">秒</div>
-                            <div class="layui-form-mid layui-word-aux">（次数填 0 = 不限制）</div>
-                        </div>
-                    </div>
-                    <div class="layui-form-item">
-                        <div class="layui-inline">
-                            <label class="layui-form-label">严格频率</label>
-                            <div class="layui-input-inline" style="width:100px;">
-                                <input type="number" name="rate_limit_strict_max" class="layui-input" value="<?= htmlspecialchars($settings['rate_limit_strict_max'] ?? '5') ?>" min="0">
-                            </div>
-                            <div class="layui-form-mid">次 /</div>
-                            <div class="layui-input-inline" style="width:100px;">
-                                <input type="number" name="rate_limit_strict_window" class="layui-input" value="<?= htmlspecialchars($settings['rate_limit_strict_window'] ?? '300') ?>" min="1">
-                            </div>
-                            <div class="layui-form-mid">秒</div>
-                            <div class="layui-form-mid layui-word-aux">（登录/注册等敏感操作）</div>
-                        </div>
-                    </div>
-                    <div class="layui-form-item">
-                        <div class="layui-inline">
-                            <label class="layui-form-label">搜索频率</label>
-                            <div class="layui-input-inline" style="width:100px;">
-                                <input type="number" name="rate_limit_search_max" class="layui-input" value="<?= htmlspecialchars($settings['rate_limit_search_max'] ?? '10') ?>" min="0">
-                            </div>
-                            <div class="layui-form-mid">次 /</div>
-                            <div class="layui-input-inline" style="width:100px;">
-                                <input type="number" name="rate_limit_search_window" class="layui-input" value="<?= htmlspecialchars($settings['rate_limit_search_window'] ?? '60') ?>" min="1">
-                            </div>
-                            <div class="layui-form-mid">秒</div>
-                        </div>
-                    </div>
-                </div>
-                <div class="layui-tab-item">
-                    <div class="layui-form-item">
-                        <div class="layui-inline">
-                            <label class="layui-form-label">最大宽度(px)</label>
-                            <div class="layui-input-inline" style="width:150px;">
-                                <input type="number" name="image_max_width" class="layui-input" value="<?= htmlspecialchars($settings['image_max_width'] ?? '1920') ?>" placeholder="1920（0不限制）">
-                            </div>
-                        </div>
-                        <div class="layui-inline">
-                            <label class="layui-form-label">缩略图(px)</label>
-                            <div class="layui-input-inline" style="width:150px;">
-                                <input type="number" name="image_thumb_width" class="layui-input" value="<?= htmlspecialchars($settings['image_thumb_width'] ?? '400') ?>" placeholder="400（0不生成）">
-                            </div>
-                        </div>
-                    </div>
-                    <div class="layui-form-item">
-                        <label class="layui-form-label">图片水印</label>
-                        <div class="layui-input-block">
-                            <input type="checkbox" name="watermark_enabled" lay-skin="switch" lay-text="开|关" lay-filter="watermarkEnabled" <?= ($settings['watermark_enabled'] ?? '0') === '1' ? 'checked' : '' ?>>
-                        </div>
-                    </div>
-                    <div id="watermarkFields" style="<?= ($settings['watermark_enabled'] ?? '0') !== '1' ? 'display:none;' : '' ?>">
-                        <div class="layui-form-item">
-                            <label class="layui-form-label">水印文字</label>
-                            <div class="layui-input-block">
-                                <input type="text" name="watermark_text" class="layui-input" value="<?= htmlspecialchars($settings['watermark_text'] ?? 'AMuBBS') ?>">
-                            </div>
-                        </div>
-                        <div class="layui-form-item">
-                            <div class="layui-inline">
-                                <label class="layui-form-label">水印位置</label>
-                                <div class="layui-input-inline" style="width:150px;">
-                                    <?php $wmPos = $settings['watermark_position'] ?? 'bottom-right'; ?>
-                                    <select name="watermark_position">
-                                        <option value="bottom-right" <?= $wmPos === 'bottom-right' ? 'selected' : '' ?>>右下角</option>
-                                        <option value="bottom-left" <?= $wmPos === 'bottom-left' ? 'selected' : '' ?>>左下角</option>
-                                        <option value="top-right" <?= $wmPos === 'top-right' ? 'selected' : '' ?>>右上角</option>
-                                        <option value="top-left" <?= $wmPos === 'top-left' ? 'selected' : '' ?>>左上角</option>
-                                        <option value="center" <?= $wmPos === 'center' ? 'selected' : '' ?>>居中</option>
-                                    </select>
-                                </div>
-                            </div>
-                            <div class="layui-inline">
-                                <label class="layui-form-label">透明度</label>
-                                <div class="layui-input-inline" style="width:100px;">
-                                    <input type="number" name="watermark_opacity" class="layui-input" value="<?= htmlspecialchars($settings['watermark_opacity'] ?? '30') ?>" min="0" max="100">
-                                </div>
-                            </div>
-                        </div>
-                    </div>
-                </div>
+$sceneLabels = ['register' => '注册', 'login' => '登录', 'thread' => '发帖', 'reply' => '回复'];
+$activeScenes = array_map('trim', explode(',', (string)($settings['captcha_scenes'] ?? '')));
+$captchaOn = $on('captcha_enabled', '0');
+$watermarkOn = $on('watermark_enabled', '0');
 
-                <!-- Tab 4: 邮件设置 -->
-                <div class="layui-tab-item">
-                    <div class="layui-form-item">
-                        <label class="layui-form-label">SMTP 服务器</label>
-                        <div class="layui-input-block">
-                            <input type="text" name="smtp_host" class="layui-input" value="<?= htmlspecialchars($settings['smtp_host'] ?? '') ?>" placeholder="如 smtp.qq.com">
-                        </div>
-                    </div>
-                    <div class="layui-form-item">
-                        <div class="layui-inline">
-                            <label class="layui-form-label">端口</label>
-                            <div class="layui-input-inline" style="width:120px;">
-                                <input type="number" name="smtp_port" class="layui-input" value="<?= htmlspecialchars($settings['smtp_port'] ?? '465') ?>">
-                            </div>
-                        </div>
-                        <div class="layui-inline">
-                            <label class="layui-form-label">加密方式</label>
-                            <div class="layui-input-inline" style="width:180px;">
-                                <?php $smtpEnc = $settings['smtp_encryption'] ?? 'ssl'; ?>
-                                <select name="smtp_encryption">
-                                    <option value="ssl" <?= $smtpEnc === 'ssl' ? 'selected' : '' ?>>SSL（推荐，端口465）</option>
-                                    <option value="tls" <?= $smtpEnc === 'tls' ? 'selected' : '' ?>>TLS（端口587）</option>
-                                    <option value="none" <?= $smtpEnc === 'none' ? 'selected' : '' ?>>无加密（端口25）</option>
-                                </select>
-                            </div>
-                        </div>
-                    </div>
-                    <div class="layui-form-item">
-                        <label class="layui-form-label">SMTP 用户名</label>
-                        <div class="layui-input-block">
-                            <input type="text" name="smtp_user" class="layui-input" value="<?= htmlspecialchars($settings['smtp_user'] ?? '') ?>" placeholder="通常是邮箱地址">
-                        </div>
-                    </div>
-                    <div class="layui-form-item">
-                        <label class="layui-form-label">SMTP 密码</label>
-                        <div class="layui-input-block">
-                            <input type="password" name="smtp_pass" class="layui-input" value="<?= htmlspecialchars($settings['smtp_pass'] ?? '') ?>" placeholder="QQ邮箱请使用授权码">
-                        </div>
-                    </div>
-                    <div class="layui-form-item">
-                        <label class="layui-form-label">发件人地址</label>
-                        <div class="layui-input-block">
-                            <input type="text" name="smtp_from" class="layui-input" value="<?= htmlspecialchars($settings['smtp_from'] ?? '') ?>" placeholder="留空则使用 SMTP 用户名">
-                        </div>
-                    </div>
-                    <div class="layui-form-item">
-                        <label class="layui-form-label">发件人名称</label>
-                        <div class="layui-input-block">
-                            <input type="text" name="smtp_from_name" class="layui-input" value="<?= htmlspecialchars($settings['smtp_from_name'] ?? 'AMuBBS') ?>">
-                        </div>
-                    </div>
-                    <div class="layui-form-item">
-                        <div class="layui-input-block">
-                            <button type="button" class="layui-btn layui-btn-normal" id="btnTestEmail">发送测试邮件</button>
-                        </div>
-                    </div>
-                </div>
+/**
+ * 渲染一个 layui 开关（含隐藏的 =0 伴生字段）
+ *
+ * 顺序固定为 hidden 在前、checkbox 在后：后端用 !empty($input[$key]) 取「最后一个」，
+ * 勾选时 checkbox 的 1 覆盖 hidden 的 0，未勾选时只剩 hidden 的 0。
+ */
+$switch = static function (string $key, string $label, bool $checked, string $hint = '', string $onText = '开启|关闭') use ($sv): string {
+    $id = htmlspecialchars($key, ENT_QUOTES, 'UTF-8');
+    $html  = '<div class="layui-form-item">' . "\n";
+    $html .= '  <label class="layui-form-label">' . htmlspecialchars($label, ENT_QUOTES, 'UTF-8') . '</label>' . "\n";
+    $html .= '  <div class="layui-input-block">' . "\n";
+    $html .= '    <input type="hidden" name="' . $id . '" value="0">' . "\n";
+    $html .= '    <input type="checkbox" name="' . $id . '" value="1" lay-skin="switch" lay-text="'
+           . htmlspecialchars($onText, ENT_QUOTES, 'UTF-8') . '"'
+           . ($checked ? ' checked' : '') . '>' . "\n";
+    if ($hint !== '') {
+        $html .= '    <div class="layui-form-mid layui-word-aux">' . htmlspecialchars($hint, ENT_QUOTES, 'UTF-8') . '</div>' . "\n";
+    }
+    $html .= '  </div>' . "\n";
+    $html .= '</div>';
 
-                <!-- Tab 5: 防灌水 -->
-                <div class="layui-tab-item">
-                    <div class="layui-form-item">
-                        <div class="layui-inline">
-                            <label class="layui-form-label">发帖上限</label>
-                            <div class="layui-input-inline" style="width:120px;">
-                                <input type="number" name="ip_limit_thread" class="layui-input" value="<?= htmlspecialchars($settings['ip_limit_thread'] ?? '20') ?>">
-                            </div>
-                        </div>
-                        <div class="layui-inline">
-                            <label class="layui-form-label">回帖上限</label>
-                            <div class="layui-input-inline" style="width:120px;">
-                                <input type="number" name="ip_limit_post" class="layui-input" value="<?= htmlspecialchars($settings['ip_limit_post'] ?? '50') ?>">
-                            </div>
-                        </div>
-                    </div>
-                    <div class="layui-form-item">
-                        <div class="layui-inline">
-                            <label class="layui-form-label">注册上限</label>
-                            <div class="layui-input-inline" style="width:120px;">
-                                <input type="number" name="ip_limit_register" class="layui-input" value="<?= htmlspecialchars($settings['ip_limit_register'] ?? '5') ?>">
-                            </div>
-                        </div>
-                        <div class="layui-inline">
-                            <label class="layui-form-label">上传上限</label>
-                            <div class="layui-input-inline" style="width:120px;">
-                                <input type="number" name="ip_limit_upload" class="layui-input" value="<?= htmlspecialchars($settings['ip_limit_upload'] ?? '30') ?>">
-                            </div>
-                        </div>
-                    </div>
-                    <div class="layui-form-mid layui-word-aux" style="padding:0 0 10px 110px;">限制同一 IP 每日操作次数，0 表示不限制</div>
-                </div>
+    return $html;
+};
 
-                <!-- Tab 6: 功能设置 -->
-                <div class="layui-tab-item">
-                    <fieldset class="layui-elem-field" style="margin-bottom:20px;">
-                        <legend>自动头像</legend>
-                        <div class="layui-field-box" style="padding:15px;">
-                            <div class="layui-form-item">
-                                <label class="layui-form-label">启用自动头像</label>
-                                <div class="layui-input-block">
-                                    <input type="checkbox" name="auto_avatar_enabled" lay-skin="switch" lay-text="开|关" <?= ($settings['auto_avatar_enabled'] ?? '1') === '1' ? 'checked' : '' ?>>
-                                    <div class="layui-form-mid layui-word-aux">用户注册时自动分配随机头像</div>
-                                </div>
-                            </div>
-                            <div class="layui-form-item">
-                                <label class="layui-form-label">覆盖已有头像</label>
-                                <div class="layui-input-block">
-                                    <input type="checkbox" name="auto_avatar_overwrite" lay-skin="switch" lay-text="开|关" <?= ($settings['auto_avatar_overwrite'] ?? '0') === '1' ? 'checked' : '' ?>>
-                                    <div class="layui-form-mid layui-word-aux">是否覆盖用户已有的自定义头像</div>
-                                </div>
-                            </div>
-                        </div>
-                    </fieldset>
+/** 运行级别下拉的选项（值 → 文案），顺序与旧版一致 */
+$runlevelOptions = [
+    '5' => '完全开放（所有人可读写）',
+    '4' => '所有人只读（游客可浏览，禁止发帖回复）',
+    '3' => '仅注册用户可读写（游客不可访问）',
+    '2' => '注册用户只读（禁止发帖回复）',
+    '1' => '仅管理员（维护模式）',
+    '0' => '关站维护（所有人不可访问）',
+];
 
-                    <fieldset class="layui-elem-field" style="margin-bottom:20px;">
-                        <legend>Emoji 表情</legend>
-                        <div class="layui-field-box" style="padding:15px;">
-                            <div class="layui-form-item">
-                                <label class="layui-form-label">启用 Emoji</label>
-                                <div class="layui-input-block">
-                                    <input type="checkbox" name="emoji_enabled" lay-skin="switch" lay-text="开|关" <?= ($settings['emoji_enabled'] ?? '1') === '1' ? 'checked' : '' ?>>
-                                    <div class="layui-form-mid layui-word-aux">将 :smile: 等短代码转换为 Emoji 表情</div>
-                                </div>
-                            </div>
-                        </div>
-                    </fieldset>
+$wmPositions = [
+    'bottom-right' => '右下角',
+    'bottom-left'  => '左下角',
+    'top-right'    => '右上角',
+    'top-left'     => '左上角',
+    'center'       => '居中',
+];
 
-                    <fieldset class="layui-elem-field" style="margin-bottom:20px;">
-                        <legend>社交登录</legend>
-                        <div class="layui-field-box" style="padding:15px;">
-                            <div class="layui-form-item">
-                                <label class="layui-form-label">GitHub 登录</label>
-                                <div class="layui-input-block">
-                                    <input type="checkbox" name="social_login_github_enabled" lay-skin="switch" lay-text="开|关" lay-filter="githubEnabled" <?= ($settings['social_login_github_enabled'] ?? '0') === '1' ? 'checked' : '' ?>>
-                                </div>
-                            </div>
-                            <div id="githubFields" style="<?= ($settings['social_login_github_enabled'] ?? '0') !== '1' ? 'display:none;' : '' ?>">
-                                <div class="layui-form-item">
-                                    <label class="layui-form-label">Client ID</label>
-                                    <div class="layui-input-block">
-                                        <input type="text" name="social_login_github_client_id" class="layui-input" value="<?= htmlspecialchars($settings['social_login_github_client_id'] ?? '') ?>">
-                                    </div>
-                                </div>
-                                <div class="layui-form-item">
-                                    <label class="layui-form-label">Client Secret</label>
-                                    <div class="layui-input-block">
-                                        <input type="password" name="social_login_github_client_secret" class="layui-input" value="<?= htmlspecialchars($settings['social_login_github_client_secret'] ?? '') ?>">
-                                    </div>
-                                </div>
-                            </div>
+$socialProviders = [
+    'github' => ['label' => 'GitHub 登录', 'id' => 'social_login_github_client_id', 'secret' => 'social_login_github_client_secret', 'idLabel' => 'Client ID', 'secretLabel' => 'Client Secret', 'default' => '0'],
+    'google' => ['label' => 'Google 登录', 'id' => 'social_login_google_client_id', 'secret' => 'social_login_google_client_secret', 'idLabel' => 'Client ID', 'secretLabel' => 'Client Secret', 'default' => '0'],
+    'wechat' => ['label' => '微信登录', 'id' => 'social_login_wechat_app_id', 'secret' => 'social_login_wechat_app_secret', 'idLabel' => 'App ID', 'secretLabel' => 'App Secret', 'default' => '0'],
+    'qq'     => ['label' => 'QQ 登录', 'id' => 'social_login_qq_app_id', 'secret' => 'social_login_qq_app_key', 'idLabel' => 'App ID', 'secretLabel' => 'App Key', 'default' => '0'],
+];
+?>
 
-                            <div class="layui-form-item" style="margin-top:15px;">
-                                <label class="layui-form-label">Google 登录</label>
-                                <div class="layui-input-block">
-                                    <input type="checkbox" name="social_login_google_enabled" lay-skin="switch" lay-text="开|关" lay-filter="googleEnabled" <?= ($settings['social_login_google_enabled'] ?? '0') === '1' ? 'checked' : '' ?>>
-                                </div>
-                            </div>
-                            <div id="googleFields" style="<?= ($settings['social_login_google_enabled'] ?? '0') !== '1' ? 'display:none;' : '' ?>">
-                                <div class="layui-form-item">
-                                    <label class="layui-form-label">Client ID</label>
-                                    <div class="layui-input-block">
-                                        <input type="text" name="social_login_google_client_id" class="layui-input" value="<?= htmlspecialchars($settings['social_login_google_client_id'] ?? '') ?>">
-                                    </div>
-                                </div>
-                                <div class="layui-form-item">
-                                    <label class="layui-form-label">Client Secret</label>
-                                    <div class="layui-input-block">
-                                        <input type="password" name="social_login_google_client_secret" class="layui-input" value="<?= htmlspecialchars($settings['social_login_google_client_secret'] ?? '') ?>">
-                                    </div>
-                                </div>
-                            </div>
+<form class="layui-form" id="settingsForm" lay-filter="settingsForm" action="">
 
-                            <div class="layui-form-item" style="margin-top:15px;">
-                                <label class="layui-form-label">微信登录</label>
-                                <div class="layui-input-block">
-                                    <input type="checkbox" name="social_login_wechat_enabled" lay-skin="switch" lay-text="开|关" lay-filter="wechatEnabled" <?= ($settings['social_login_wechat_enabled'] ?? '0') === '1' ? 'checked' : '' ?>>
-                                </div>
-                            </div>
-                            <div id="wechatFields" style="<?= ($settings['social_login_wechat_enabled'] ?? '0') !== '1' ? 'display:none;' : '' ?>">
-                                <div class="layui-form-item">
-                                    <label class="layui-form-label">App ID</label>
-                                    <div class="layui-input-block">
-                                        <input type="text" name="social_login_wechat_app_id" class="layui-input" value="<?= htmlspecialchars($settings['social_login_wechat_app_id'] ?? '') ?>">
-                                    </div>
-                                </div>
-                                <div class="layui-form-item">
-                                    <label class="layui-form-label">App Secret</label>
-                                    <div class="layui-input-block">
-                                        <input type="password" name="social_login_wechat_app_secret" class="layui-input" value="<?= htmlspecialchars($settings['social_login_wechat_app_secret'] ?? '') ?>">
-                                    </div>
-                                </div>
-                            </div>
+  <div class="layui-tab layui-tab-brief" lay-filter="settingsTabs">
+    <ul class="layui-tab-title">
+      <li class="layui-this">基本设置</li>
+      <li>安全设置</li>
+      <li>上传设置</li>
+      <li>邮件设置</li>
+      <li>防灌水</li>
+      <li>功能设置</li>
+    </ul>
 
-                            <div class="layui-form-item" style="margin-top:15px;">
-                                <label class="layui-form-label">QQ 登录</label>
-                                <div class="layui-input-block">
-                                    <input type="checkbox" name="social_login_qq_enabled" lay-skin="switch" lay-text="开|关" lay-filter="qqEnabled" <?= ($settings['social_login_qq_enabled'] ?? '0') === '1' ? 'checked' : '' ?>>
-                                </div>
-                            </div>
-                            <div id="qqFields" style="<?= ($settings['social_login_qq_enabled'] ?? '0') !== '1' ? 'display:none;' : '' ?>">
-                                <div class="layui-form-item">
-                                    <label class="layui-form-label">App ID</label>
-                                    <div class="layui-input-block">
-                                        <input type="text" name="social_login_qq_app_id" class="layui-input" value="<?= htmlspecialchars($settings['social_login_qq_app_id'] ?? '') ?>">
-                                    </div>
-                                </div>
-                                <div class="layui-form-item">
-                                    <label class="layui-form-label">App Key</label>
-                                    <div class="layui-input-block">
-                                        <input type="password" name="social_login_qq_app_key" class="layui-input" value="<?= htmlspecialchars($settings['social_login_qq_app_key'] ?? '') ?>">
-                                    </div>
-                                </div>
-                            </div>
-                        </div>
-                    </fieldset>
+    <div class="layui-tab-content">
 
-                    <fieldset class="layui-elem-field" style="margin-bottom:20px;">
-                        <legend>编辑器设置</legend>
-                        <div class="layui-field-box" style="padding:15px;">
-                            <div class="layui-form-item">
-                                <label class="layui-form-label">编辑器类型</label>
-                                <div class="layui-input-block">
-                                    <?php $editorType = $settings['editor_type'] ?? 'markdown'; ?>
-                                    <select name="editor_type" lay-filter="editorType">
-                                        <option value="markdown" <?= $editorType === 'markdown' ? 'selected' : '' ?>>Markdown 编辑器</option>
-                                        <option value="tinymce" <?= $editorType === 'tinymce' ? 'selected' : '' ?>>TinyMCE 富文本编辑器</option>
-                                    </select>
-                                </div>
-                            </div>
-                            <div id="tinymceFields" style="<?= ($settings['editor_type'] ?? 'markdown') !== 'tinymce' ? 'display:none;' : '' ?>">
-                                <div class="layui-form-item">
-                                    <label class="layui-form-label">发帖启用</label>
-                                    <div class="layui-input-block">
-                                        <input type="checkbox" name="tinymce_enable_post_editor" lay-skin="switch" lay-text="开|关" <?= ($settings['tinymce_enable_post_editor'] ?? '1') === '1' ? 'checked' : '' ?>>
-                                        <div class="layui-form-mid layui-word-aux">在发帖页面启用 TinyMCE</div>
-                                    </div>
-                                </div>
-                                <div class="layui-form-item">
-                                    <label class="layui-form-label">回复启用</label>
-                                    <div class="layui-input-block">
-                                        <input type="checkbox" name="tinymce_enable_reply_editor" lay-skin="switch" lay-text="开|关" <?= ($settings['tinymce_enable_reply_editor'] ?? '1') === '1' ? 'checked' : '' ?>>
-                                        <div class="layui-form-mid layui-word-aux">在回复页面启用 TinyMCE</div>
-                                    </div>
-                                </div>
-                            </div>
-                        </div>
-                    </fieldset>
-                </div>
+      <!-- ============ 基本设置 ============ -->
+      <div class="layui-tab-item layui-show">
 
+        <blockquote class="layui-elem-quote layui-quote-nm">站点名称、地址与运行状态。</blockquote>
 
-            </div>
+        <div class="layui-form-item">
+          <label class="layui-form-label">站点名称</label>
+          <div class="layui-input-block">
+            <input type="text" name="site_name" class="layui-input" maxlength="100" value="<?= $sv('site_name') ?>">
+          </div>
         </div>
 
-            <div class="layui-form-item">
-                <div class="layui-input-block">
-                    <button type="button" class="layui-btn" lay-submit lay-filter="saveSettings">保存设置</button>
-                </div>
+        <div class="layui-form-item">
+          <label class="layui-form-label">站点 URL</label>
+          <div class="layui-input-block">
+            <input type="text" name="site_url" class="layui-input" maxlength="255"
+                   placeholder="http://localhost:8000" value="<?= $sv('site_url') ?>">
+          </div>
+        </div>
+
+        <div class="layui-form-item">
+          <label class="layui-form-label">站点描述</label>
+          <div class="layui-input-block">
+            <input type="text" name="site_description" class="layui-input" maxlength="255" value="<?= $sv('site_description') ?>">
+          </div>
+        </div>
+
+        <div class="layui-form-item">
+          <label class="layui-form-label">站点关键词</label>
+          <div class="layui-input-block">
+            <input type="text" name="site_keywords" class="layui-input" maxlength="255"
+                   placeholder="用逗号分隔" value="<?= $sv('site_keywords') ?>">
+          </div>
+        </div>
+
+        <div class="layui-form-item">
+          <label class="layui-form-label">ICP 备案号</label>
+          <div class="layui-input-block">
+            <input type="text" name="icp_number" class="layui-input" maxlength="100"
+                   placeholder="可留空" value="<?= $sv('icp_number') ?>">
+          </div>
+        </div>
+
+        <div class="layui-form-item">
+          <label class="layui-form-label">CDN 地址</label>
+          <div class="layui-input-block">
+            <input type="text" name="cdn_url" class="layui-input" maxlength="255"
+                   placeholder="如 https://cdn.example.com（留空不启用）" value="<?= $sv('cdn_url') ?>">
+          </div>
+        </div>
+
+        <div class="layui-form-item">
+          <label class="layui-form-label">运行级别</label>
+          <div class="layui-input-block">
+            <?php $runlevel = $sel('site_runlevel', '5'); ?>
+            <select name="site_runlevel">
+              <?php foreach ($runlevelOptions as $val => $label): ?>
+                <option value="<?= $val ?>" <?= $runlevel === (string)$val ? 'selected' : '' ?>><?= $label ?></option>
+              <?php endforeach; ?>
+            </select>
+          </div>
+        </div>
+
+        <div class="layui-form-item">
+          <label class="layui-form-label">维护提示</label>
+          <div class="layui-input-block">
+            <input type="text" name="site_maintenance_msg" class="layui-input" maxlength="255"
+                   placeholder="站点维护中，请稍后再访问..." value="<?= $sv('site_maintenance_msg') ?>">
+          </div>
+        </div>
+
+        <div class="layui-form-item">
+          <div class="layui-inline">
+            <label class="layui-form-label">每页主题数</label>
+            <div class="layui-input-inline">
+              <input type="number" name="threads_per_page" class="layui-input"
+                     min="5" max="100" value="<?= $sv('threads_per_page', '20') ?>">
             </div>
-        </form>
+            <div class="layui-form-mid layui-word-aux">5 - 100</div>
+          </div>
+
+          <div class="layui-inline">
+            <label class="layui-form-label">公告隐藏时长</label>
+            <div class="layui-input-inline" style="width:110px">
+              <input type="number" name="announcement_hide_duration" class="layui-input"
+                     min="0" value="<?= $sv('announcement_hide_duration', '60') ?>">
+            </div>
+            <div class="layui-form-mid layui-word-aux">分钟，0 表示刷新后立即恢复</div>
+          </div>
+        </div>
+
+        <?= $switch('url_html_suffix', 'URL .html 后缀', $on('url_html_suffix', '1'), '支持 .html 后缀访问（如 /thread/1.html）') ?>
+
+      </div>
+
+      <!-- ============ 安全设置 ============ -->
+      <div class="layui-tab-item">
+
+        <blockquote class="layui-elem-quote layui-quote-nm">访问控制与验证码。</blockquote>
+
+        <div class="layui-form-item">
+          <label class="layui-form-label">IP 白名单</label>
+          <div class="layui-input-block">
+            <input type="text" name="admin_bind_ip" class="layui-input" maxlength="255"
+                   placeholder="留空不限制，多个 IP 用逗号分隔" value="<?= $sv('admin_bind_ip') ?>">
+            <div class="layui-word-aux" style="padding-left:0">当前 IP：<?= htmlspecialchars($currentIp, ENT_QUOTES, 'UTF-8') ?></div>
+          </div>
+        </div>
+
+        <div class="layui-form-item">
+          <label class="layui-form-label">定时任务密钥</label>
+          <div class="layui-input-block">
+            <input type="text" name="cron_key" class="layui-input" maxlength="100"
+                   placeholder="留空不验证" value="<?= $sv('cron_key') ?>">
+            <div class="layui-word-aux" style="padding-left:0">
+              访问 <span class="layui-badge-rim">/cron/run?key=密钥</span> 触发定时任务。
+            </div>
+          </div>
+        </div>
+
+        <?= $switch('captcha_enabled', '启用验证码', $captchaOn) ?>
+
+        <div id="captchaFields"<?= $captchaOn ? '' : ' style="display:none"' ?>>
+
+          <div class="layui-form-item">
+            <label class="layui-form-label">验证码类型</label>
+            <div class="layui-input-block">
+              <?php $captchaType = $sel('captcha_type', 'numeric'); ?>
+              <select name="captcha_type">
+                <option value="numeric" <?= $captchaType === 'numeric' ? 'selected' : '' ?>>数字验证码</option>
+                <option value="alpha" <?= $captchaType === 'alpha' ? 'selected' : '' ?>>字母数字验证码</option>
+                <option value="slider" <?= $captchaType === 'slider' ? 'selected' : '' ?>>滑动拼图验证</option>
+              </select>
+            </div>
+          </div>
+
+          <div class="layui-form-item">
+            <label class="layui-form-label">启用场景</label>
+            <div class="layui-input-block">
+              <?php foreach ($sceneLabels as $scene => $label): ?>
+                <input type="checkbox" name="captcha_scene_<?= $scene ?>" value="1" lay-skin="primary"
+                       title="<?= htmlspecialchars($label, ENT_QUOTES, 'UTF-8') ?>"
+                       <?= in_array($scene, $activeScenes, true) ? 'checked' : '' ?>>
+              <?php endforeach; ?>
+              <div class="layui-word-aux" style="padding-left:0">未勾选的场景不校验验证码。</div>
+            </div>
+          </div>
+
+        </div>
+
+        <blockquote class="layui-elem-quote layui-quote-nm">
+          频率限制：次数填 0 = 不限制；严格档用于登录/注册等敏感操作。
+        </blockquote>
+
+        <div class="layui-form-item">
+          <div class="layui-inline">
+            <label class="layui-form-label">全局</label>
+            <div class="layui-input-inline" style="width:100px">
+              <input type="number" name="rate_limit_global_max" class="layui-input"
+                     min="0" value="<?= $sv('rate_limit_global_max', '60') ?>">
+            </div>
+            <div class="layui-form-mid">次 /</div>
+            <div class="layui-input-inline" style="width:100px">
+              <input type="number" name="rate_limit_global_window" class="layui-input"
+                     min="1" value="<?= $sv('rate_limit_global_window', '60') ?>">
+            </div>
+            <div class="layui-form-mid layui-word-aux">秒</div>
+          </div>
+        </div>
+
+        <div class="layui-form-item">
+          <div class="layui-inline">
+            <label class="layui-form-label">严格</label>
+            <div class="layui-input-inline" style="width:100px">
+              <input type="number" name="rate_limit_strict_max" class="layui-input"
+                     min="0" value="<?= $sv('rate_limit_strict_max', '5') ?>">
+            </div>
+            <div class="layui-form-mid">次 /</div>
+            <div class="layui-input-inline" style="width:100px">
+              <input type="number" name="rate_limit_strict_window" class="layui-input"
+                     min="1" value="<?= $sv('rate_limit_strict_window', '300') ?>">
+            </div>
+            <div class="layui-form-mid layui-word-aux">秒（登录/注册等敏感操作）</div>
+          </div>
+        </div>
+
+        <div class="layui-form-item">
+          <div class="layui-inline">
+            <label class="layui-form-label">搜索</label>
+            <div class="layui-input-inline" style="width:100px">
+              <input type="number" name="rate_limit_search_max" class="layui-input"
+                     min="0" value="<?= $sv('rate_limit_search_max', '10') ?>">
+            </div>
+            <div class="layui-form-mid">次 /</div>
+            <div class="layui-input-inline" style="width:100px">
+              <input type="number" name="rate_limit_search_window" class="layui-input"
+                     min="1" value="<?= $sv('rate_limit_search_window', '60') ?>">
+            </div>
+            <div class="layui-form-mid layui-word-aux">秒</div>
+          </div>
+        </div>
+
+      </div>
+
+      <!-- ============ 上传设置 ============ -->
+      <div class="layui-tab-item">
+
+        <blockquote class="layui-elem-quote layui-quote-nm">图片处理与图片水印。</blockquote>
+
+        <div class="layui-form-item">
+          <label class="layui-form-label">最大宽度（px）</label>
+          <div class="layui-input-inline" style="width:140px">
+            <input type="number" name="image_max_width" class="layui-input"
+                   min="0" value="<?= $sv('image_max_width', '1920') ?>">
+          </div>
+          <div class="layui-form-mid layui-word-aux">0 表示不限制</div>
+        </div>
+
+        <div class="layui-form-item">
+          <label class="layui-form-label">缩略图宽度（px）</label>
+          <div class="layui-input-inline" style="width:140px">
+            <input type="number" name="image_thumb_width" class="layui-input"
+                   min="0" value="<?= $sv('image_thumb_width', '400') ?>">
+          </div>
+          <div class="layui-form-mid layui-word-aux">0 表示不生成</div>
+        </div>
+
+        <?= $switch('watermark_enabled', '启用水印', $watermarkOn) ?>
+
+        <div id="watermarkFields"<?= $watermarkOn ? '' : ' style="display:none"' ?>>
+
+          <div class="layui-form-item">
+            <label class="layui-form-label">水印文字</label>
+            <div class="layui-input-inline" style="width:200px">
+              <input type="text" name="watermark_text" class="layui-input"
+                     maxlength="50" value="<?= $sv('watermark_text', 'AMuBBS') ?>">
+            </div>
+
+            <div class="layui-inline">
+              <label class="layui-form-label">水印位置</label>
+              <div class="layui-input-inline">
+                <?php $wmPos = $sel('watermark_position', 'bottom-right'); ?>
+                <select name="watermark_position">
+                  <?php foreach ($wmPositions as $val => $label): ?>
+                    <option value="<?= $val ?>" <?= $wmPos === $val ? 'selected' : '' ?>><?= $label ?></option>
+                  <?php endforeach; ?>
+                </select>
+              </div>
+            </div>
+
+            <div class="layui-inline">
+              <label class="layui-form-label">透明度</label>
+              <div class="layui-input-inline" style="width:100px">
+                <input type="number" name="watermark_opacity" class="layui-input"
+                       min="0" max="100" value="<?= $sv('watermark_opacity', '30') ?>">
+              </div>
+              <div class="layui-form-mid layui-word-aux">0 - 100</div>
+            </div>
+          </div>
+
+        </div>
+
+      </div>
+
+      <!-- ============ 邮件设置 ============ -->
+      <div class="layui-tab-item">
+
+        <blockquote class="layui-elem-quote layui-quote-nm">SMTP 发信配置。</blockquote>
+
+        <div class="layui-form-item">
+          <label class="layui-form-label">SMTP 服务器</label>
+          <div class="layui-input-block">
+            <input type="text" name="smtp_host" class="layui-input" maxlength="255"
+                   placeholder="如 smtp.qq.com" value="<?= $sv('smtp_host') ?>">
+          </div>
+        </div>
+
+        <div class="layui-form-item">
+          <div class="layui-inline">
+            <label class="layui-form-label">端口</label>
+            <div class="layui-input-inline" style="width:100px">
+              <input type="number" name="smtp_port" class="layui-input"
+                     min="1" max="65535" value="<?= $sv('smtp_port', '465') ?>">
+            </div>
+          </div>
+
+          <div class="layui-inline">
+            <label class="layui-form-label">加密方式</label>
+            <div class="layui-input-inline" style="width:230px">
+              <?php $smtpEnc = $sel('smtp_encryption', 'ssl'); ?>
+              <select name="smtp_encryption">
+                <option value="ssl" <?= $smtpEnc === 'ssl' ? 'selected' : '' ?>>SSL（推荐，端口 465）</option>
+                <option value="tls" <?= $smtpEnc === 'tls' ? 'selected' : '' ?>>TLS（端口 587）</option>
+                <option value="none" <?= $smtpEnc === 'none' ? 'selected' : '' ?>>无加密（端口 25）</option>
+              </select>
+            </div>
+          </div>
+        </div>
+
+        <div class="layui-form-item">
+          <label class="layui-form-label">SMTP 用户名</label>
+          <div class="layui-input-block">
+            <input type="text" name="smtp_user" class="layui-input" maxlength="255"
+                   placeholder="通常是邮箱地址" value="<?= $sv('smtp_user') ?>">
+          </div>
+        </div>
+
+        <div class="layui-form-item">
+          <label class="layui-form-label">SMTP 密码</label>
+          <div class="layui-input-block">
+            <input type="password" name="smtp_pass" class="layui-input" lay-ignore
+                   autocomplete="new-password" placeholder="QQ 邮箱请使用授权码"
+                   value="<?= $sv('smtp_pass') ?>">
+          </div>
+        </div>
+
+        <div class="layui-form-item">
+          <label class="layui-form-label">发件人地址</label>
+          <div class="layui-input-block">
+            <input type="text" name="smtp_from" class="layui-input" maxlength="255"
+                   placeholder="留空则使用 SMTP 用户名" value="<?= $sv('smtp_from') ?>">
+          </div>
+        </div>
+
+        <div class="layui-form-item">
+          <label class="layui-form-label">发件人名称</label>
+          <div class="layui-input-block">
+            <input type="text" name="smtp_from_name" class="layui-input" maxlength="100"
+                   value="<?= $sv('smtp_from_name', 'AMuBBS') ?>">
+          </div>
+        </div>
+
+        <div class="layui-form-item">
+          <div class="layui-input-block">
+            <button type="button" class="layui-btn layui-btn-primary layui-btn-sm" id="settingsTestEmail">
+              发送测试邮件
+            </button>
+            <div class="layui-word-aux" style="padding-left:0">会按上方填写的配置直接发送，请先保存再测试。</div>
+          </div>
+        </div>
+
+      </div>
+
+      <!-- ============ 防灌水 ============ -->
+      <div class="layui-tab-item">
+
+        <blockquote class="layui-elem-quote layui-quote-nm">
+          限制同一 IP 每日操作次数，填 0 表示不限制。
+        </blockquote>
+
+        <div class="layui-form-item">
+          <label class="layui-form-label">发帖上限</label>
+          <div class="layui-input-inline" style="width:120px">
+            <input type="number" name="ip_limit_thread" class="layui-input"
+                   min="0" value="<?= $sv('ip_limit_thread', '20') ?>">
+          </div>
+        </div>
+
+        <div class="layui-form-item">
+          <label class="layui-form-label">回帖上限</label>
+          <div class="layui-input-inline" style="width:120px">
+            <input type="number" name="ip_limit_post" class="layui-input"
+                   min="0" value="<?= $sv('ip_limit_post', '50') ?>">
+          </div>
+        </div>
+
+        <div class="layui-form-item">
+          <label class="layui-form-label">注册上限</label>
+          <div class="layui-input-inline" style="width:120px">
+            <input type="number" name="ip_limit_register" class="layui-input"
+                   min="0" value="<?= $sv('ip_limit_register', '5') ?>">
+          </div>
+        </div>
+
+        <div class="layui-form-item">
+          <label class="layui-form-label">上传上限</label>
+          <div class="layui-input-inline" style="width:120px">
+            <input type="number" name="ip_limit_upload" class="layui-input"
+                   min="0" value="<?= $sv('ip_limit_upload', '30') ?>">
+          </div>
+        </div>
+
+      </div>
+
+      <!-- ============ 功能设置 ============ -->
+      <div class="layui-tab-item">
+
+        <blockquote class="layui-elem-quote layui-quote-nm">自动头像与 Emoji 表情。</blockquote>
+
+        <?= $switch('auto_avatar_enabled', '启用自动头像', $on('auto_avatar_enabled', '1'), '用户注册时自动分配随机头像') ?>
+        <?= $switch('auto_avatar_overwrite', '覆盖已有头像', $on('auto_avatar_overwrite', '0'), '是否覆盖用户已有的自定义头像') ?>
+        <?= $switch('emoji_enabled', '启用 Emoji', $on('emoji_enabled', '1'), '将 :smile: 等短代码转换为 Emoji 表情') ?>
+
+        <blockquote class="layui-elem-quote layui-quote-nm">社交登录：启用后需要填写对应的应用凭据。</blockquote>
+
+        <?php foreach ($socialProviders as $key => $p): ?>
+          <?php $enabled = $on('social_login_' . $key . '_enabled', $p['default']); ?>
+
+          <?= $switch('social_login_' . $key . '_enabled', $p['label'], $enabled) ?>
+
+          <div id="<?= $key ?>Fields" class="layui-form-item"<?= $enabled ? '' : ' style="display:none"' ?>>
+            <div class="layui-inline">
+              <label class="layui-form-label"><?= htmlspecialchars($p['idLabel'], ENT_QUOTES, 'UTF-8') ?></label>
+              <div class="layui-input-inline" style="width:260px">
+                <input type="text" name="<?= $p['id'] ?>" class="layui-input"
+                       maxlength="255" value="<?= $sv($p['id']) ?>">
+              </div>
+            </div>
+
+            <div class="layui-inline">
+              <label class="layui-form-label"><?= htmlspecialchars($p['secretLabel'], ENT_QUOTES, 'UTF-8') ?></label>
+              <div class="layui-input-inline" style="width:260px">
+                <input type="password" name="<?= $p['secret'] ?>" class="layui-input" lay-ignore
+                       maxlength="255" autocomplete="new-password" value="<?= $sv($p['secret']) ?>">
+              </div>
+            </div>
+          </div>
+        <?php endforeach; ?>
+
+      </div>
+
     </div>
-</div>
+  </div>
+
+  <div class="layui-form-item">
+    <div class="layui-input-block" style="margin-left:0">
+      <button class="layui-btn" lay-submit lay-filter="settingsSubmit">保存设置</button>
+      <span class="layui-word-aux">保存后立即生效，缓存会自动清理</span>
+    </div>
+  </div>
+
+</form>
 
 <script>
-layui.use(['form', 'layer', 'element'], function(){
-    var $ = layui.$, layer = layui.layer, form = layui.form;
+layui.use(['form', 'element'], function () {
+  var form = layui.form;
+  var $ = layui.jquery;
 
-    form.on('switch(captchaEnabled)', function(data){ $('#captchaFields').toggle(data.elem.checked); });
-    form.on('switch(watermarkEnabled)', function(data){ $('#watermarkFields').toggle(data.elem.checked); });
-    form.on('switch(githubEnabled)', function(data){ $('#githubFields').toggle(data.elem.checked); });
-    form.on('switch(googleEnabled)', function(data){ $('#googleFields').toggle(data.elem.checked); });
-    form.on('switch(wechatEnabled)', function(data){ $('#wechatFields').toggle(data.elem.checked); });
-    form.on('switch(qqEnabled)', function(data){ $('#qqFields').toggle(data.elem.checked); });
-    form.on('select(editorType)', function(data){ $('#tinymceFields').toggle(data.value === 'tinymce'); });
+  // 开关联动：勾选 / 取消勾选时显示或隐藏它控制的字段区块。
+  // 用通配的 'switch' 事件再按 name 分派 —— 这些开关没有 lay-filter，
+  // 绑 'switch(具体名字)' 永远不会触发。
+  var toggles = {
+    captcha_enabled: '#captchaFields',
+    watermark_enabled: '#watermarkFields',
+    <?php foreach (array_keys($socialProviders) as $key): ?>
+    'social_login_<?= $key ?>_enabled': '#<?= $key ?>Fields',
+    <?php endforeach; ?>
+  };
 
+  form.on('switch', function (data) {
+    var name = data.elem && data.elem.name;
+    if (!name || !toggles[name]) { return; }
 
-    function collectFormData(fields) {
-        var data = {};
-        for (var k in fields) data[k] = fields[k];
-        data.captcha_enabled = fields.captcha_enabled ? '1' : '0';
-        data.watermark_enabled = fields.watermark_enabled ? '1' : '0';
-        data.url_html_suffix = fields.url_html_suffix ? '1' : '0';
-        data.auto_avatar_enabled = fields.auto_avatar_enabled ? '1' : '0';
-        data.auto_avatar_overwrite = fields.auto_avatar_overwrite ? '1' : '0';
-        data.emoji_enabled = fields.emoji_enabled ? '1' : '0';
-        data.social_login_github_enabled = fields.social_login_github_enabled ? '1' : '0';
-        data.social_login_google_enabled = fields.social_login_google_enabled ? '1' : '0';
-        data.social_login_wechat_enabled = fields.social_login_wechat_enabled ? '1' : '0';
-        data.social_login_qq_enabled = fields.social_login_qq_enabled ? '1' : '0';
-        data.tinymce_enable_post_editor = fields.tinymce_enable_post_editor ? '1' : '0';
-        data.tinymce_enable_reply_editor = fields.tinymce_enable_reply_editor ? '1' : '0';
-        var scenes = [];
-        if (fields.captcha_scene_register) scenes.push('register');
-        if (fields.captcha_scene_login) scenes.push('login');
-        if (fields.captcha_scene_thread) scenes.push('thread');
-        if (fields.captcha_scene_reply) scenes.push('reply');
-        data.captcha_scenes = scenes.join(',');
-        delete data.captcha_scene_register; delete data.captcha_scene_login;
-        delete data.captcha_scene_thread; delete data.captcha_scene_reply;
-        return data;
-    }
+    $(toggles[name]).toggle(data.elem.checked);
+  });
 
-    form.on('submit(saveSettings)', function(data){
-        var formData = collectFormData(data.field);
-        var l = layer.load(2);
-        $.ajax({ url:'/admin/settings', type:'POST', contentType:'application/json', data:JSON.stringify(formData),
-            success:function(res){ layer.close(l);
-                if(res.code===0||res.success) layer.msg(res.msg||res.message||'保存成功',{icon:1});
-                else layer.msg(res.msg||res.message||'保存失败',{icon:2});
-            }, error:function(){ layer.close(l); layer.msg('请求失败',{icon:2}); }
-        });
-        return false;
+  // 保存：serialize() 而不是 data.field —— 表单里有大量「同名 hidden + checkbox」，
+  // serialize() 会把两条都发出去，交给 PHP 解析成最后一个值，行为与旧版一致。
+  form.on('submit(settingsSubmit)', function () {
+    AdminUi.post('/admin/settings', $('#settingsForm').serialize(), function () {
+      // 整页配置表单，保存后不关弹层、不刷新表格，只给提示
     });
+    return false;
+  });
 
-    $('#btnTestEmail').on('click', function(){
-        var fields = form.val('settingsForm');
-        var formData = collectFormData(fields);
-        var l = layer.load(2);
-        $.ajax({ url:'/admin/settings/test-email', type:'POST', contentType:'application/json', data:JSON.stringify(formData),
-            success:function(res){ layer.close(l);
-                if(res.code===0||res.success) layer.msg(res.msg||res.message||'发送成功',{icon:1});
-                else layer.msg(res.msg||res.message||'发送失败',{icon:2});
-            }, error:function(){ layer.close(l); layer.msg('请求失败',{icon:2}); }
-        });
+  // 发送测试邮件：只探测、不改数据，因此只弹提示
+  $('#settingsTestEmail').on('click', function () {
+    $.post('/admin/settings/test-email', $('#settingsForm').serialize(), function (res) {
+      if (res && res.code === 0) {
+        AdminUi.ok(res.msg || '测试邮件已发送');
+      } else {
+        AdminUi.fail((res && (res.msg || res.message)) || '邮件发送失败');
+      }
+    }, 'json').fail(function (xhr) {
+      var msg = '邮件发送失败';
+      try { msg = JSON.parse(xhr.responseText).message || msg; } catch (e) {}
+      AdminUi.fail(msg);
     });
+  });
 });
 </script>
-
-<?php include __DIR__ . '/layout_child_footer.php'; ?>

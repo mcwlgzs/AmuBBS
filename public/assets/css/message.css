@@ -33,12 +33,6 @@
     background: var(--gray-50);
 }
 
-/* 时间分隔 */
-.msg-date-sep {
-    text-align: center; font-size: 11px; color: var(--text-muted);
-    padding: 8px 0; user-select: none;
-}
-
 /* 气泡 */
 .msg-row { display: flex; align-items: flex-end; gap: 8px; max-width: 75%; }
 .msg-row.msg-self { align-self: flex-end; flex-direction: row-reverse; }

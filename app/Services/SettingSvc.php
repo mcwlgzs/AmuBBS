@@ -5,7 +5,7 @@
 
 namespace App\Services;
 
-use Core\Database;
+use App\Models\Setting;
 use Core\Cache;
 
 class SettingSvc
@@ -23,12 +23,7 @@ class SettingSvc
 
         try {
             self::$cache = Cache::getStale('settings:all', function () {
-                $rows = Database::fetchAll("SELECT `key`, `value` FROM settings");
-                $settings = [];
-                foreach ($rows as $row) {
-                    $settings[$row['key']] = $row['value'];
-                }
-                return $settings;
+                return Setting::all();
             }, 300);
         } catch (\Throwable $e) {
             // 未安装时 DB/表不存在，返回空数组使调用方使用默认值
@@ -71,6 +66,32 @@ class SettingSvc
         return (int)$val;
     }
 
+    /**
+     * 批量写入设置（后台设置页用），写完自动失效缓存
+     *
+     * @param array<string, string> $values
+     */
+    public static function setMany(array $values): void
+    {
+        Setting::setMany($values);
+        self::clearCache();
+    }
+
+    /**
+     * 按前缀读取设置（带缓存的全量数据里筛，避免再查一次库）
+     */
+    public static function allWithPrefix(string $prefix): array
+    {
+        $all = self::all();
+        $out = [];
+        foreach ($all as $key => $value) {
+            if (str_starts_with((string)$key, $prefix)) {
+                $out[$key] = $value;
+            }
+        }
+
+        return $out;
+    }
     /**
      * 清除缓存（设置保存后调用）
      */

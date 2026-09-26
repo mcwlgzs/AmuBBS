@@ -49,6 +49,11 @@ class Security
      */
     public static function setSecurityHeaders(): void
     {
+        // 不暴露 PHP 版本（php.ini 的 expose_php 在 SAPI 层自动加了这个头）
+        if (function_exists('header_remove')) {
+            header_remove('X-Powered-By');
+        }
+
         header('X-Content-Type-Options: nosniff');
         header('X-Frame-Options: SAMEORIGIN');
         header('Referrer-Policy: strict-origin-when-cross-origin');

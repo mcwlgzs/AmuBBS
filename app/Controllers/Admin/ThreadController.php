@@ -5,256 +5,171 @@
 
 namespace App\Controllers\Admin;
 
-use Core\Database;
-use Core\Cache;
 use Core\Event;
 use App\Events\Events;
+use App\Models\Forum;
+use App\Models\Thread as ThreadModel;
 
 class ThreadController extends AdminBase
 {
-    /**
-     * 构建帖子列表查询条件（threads/threadsApi 共用）
-     */
-    private function buildThreadsWhere(): array
-    {
-        $search = trim($_GET['search'] ?? '');
-        $forumId = (int) ($_GET['forum_id'] ?? 0);
-        $username = trim($_GET['username'] ?? '');
-        $ip = trim($_GET['ip'] ?? '');
-        $dateFrom = trim($_GET['date_from'] ?? '');
-        $dateTo = trim($_GET['date_to'] ?? '');
-        $status = trim($_GET['status'] ?? '');
-
-        $where = "WHERE t.deleted_at IS NULL";
-        $params = [];
-
-        if ($search !== '') {
-            $where .= " AND t.title LIKE ?";
-            $params[] = "%" . addcslashes($search, '%_\\') . "%";
-        }
-        if ($forumId > 0) {
-            $where .= " AND t.forum_id = ?";
-            $params[] = $forumId;
-        }
-        if ($username !== '') {
-            $where .= " AND t.username LIKE ?";
-            $params[] = "%" . addcslashes($username, '%_\\') . "%";
-        }
-        if ($ip !== '') {
-            $where .= " AND t.user_ip LIKE ?";
-            $params[] = "%" . addcslashes($ip, '%_\\') . "%";
-        }
-        if ($dateFrom !== '') {
-            $ts = strtotime($dateFrom);
-            if ($ts) { $where .= " AND t.created_at >= ?"; $params[] = $ts; }
-        }
-        if ($dateTo !== '') {
-            $ts = strtotime($dateTo . ' 23:59:59');
-            if ($ts) { $where .= " AND t.created_at <= ?"; $params[] = $ts; }
-        }
-        if ($status === 'top') {
-            $where .= " AND t.is_top > 0";
-        } elseif ($status === 'highlight') {
-            $where .= " AND t.is_highlight = 1";
-        } elseif ($status === 'locked') {
-            $where .= " AND t.is_locked = 1";
-        }
-
-        return [$where, $params, compact('search', 'forumId', 'username', 'ip', 'dateFrom', 'dateTo', 'status')];
-    }
-
-    private function getThreadsSortCol(): array
-    {
-        $sortBy = $_GET['sort'] ?? 'id';
-        $sortDir = strtolower($_GET['dir'] ?? 'desc');
-        $allowedSorts = [
-            'id' => 't.id',
-            'views' => 't.views',
-            'reply_count' => 't.reply_count',
-            'created_at' => 't.created_at',
-        ];
-        $sortCol = $allowedSorts[$sortBy] ?? 't.id';
-        if (!in_array($sortDir, ['asc', 'desc'], true)) $sortDir = 'desc';
-        return [$sortCol, $sortDir];
-    }
-
     public function threads(): void
     {
         $this->requireAdmin();
-
-        $forums = Database::fetchAll("SELECT id, name FROM forums WHERE deleted_at IS NULL ORDER BY `rank` DESC, id ASC");
-
-        $this->render('admin/threads', [
-            'pageTitle' => '帖子管理',
-            'forums' => $forums,
-        ]);
+        $this->renderThreadsPage();
     }
 
     /**
-     * 帖子列表 API（layui table 数据源）
+     * 帖子数据（页面与 JSON API 共用同一份查询逻辑）
+     *
+     * @return array{rows: array, total: int}
+     */
+    private function fetchThreads(int $page, int $limit): array
+    {
+        // 筛选/排序/SQL 都在模型里（Thread::adminList）
+        return ThreadModel::adminList($this->threadFilters(), $page, $limit);
+    }
+
+    /**
+     * 从查询串里取出后台列表的筛选条件（纯取值，不含 SQL）
+     */
+    private function threadFilters(): array
+    {
+        return [
+            'search'    => trim($_GET['search'] ?? ''),
+            'forum_id'  => (int)($_GET['forum_id'] ?? 0),
+            'username'  => trim($_GET['username'] ?? ''),
+            'ip'        => trim($_GET['ip'] ?? ''),
+            'date_from' => trim($_GET['date_from'] ?? ''),
+            'date_to'   => trim($_GET['date_to'] ?? ''),
+            'status'    => trim($_GET['status'] ?? ''),
+            'sort'      => (string)($_GET['sort'] ?? 'id'),
+            'dir'       => (string)($_GET['dir'] ?? 'desc'),
+        ];
+    }
+
+    /**
+     * 渲染帖子管理页面片段（GET 与各种操作后的刷新共用同一个渲染路径）
+     */
+    private function renderThreadsPage(): void
+    {
+        $page  = max(1, (int)($_GET['page'] ?? 1));
+        $limit = 20;
+
+        $result = $this->fetchThreads($page, $limit);
+        $sortDir = $result['sortDir'];
+
+        $this->renderAdmin('admin/threads', [
+            'pageTitle' => '帖子管理',
+            'forums'    => Forum::getOptions(),
+            'rows'      => $result['rows'],
+            'total'     => $result['total'],
+            'page'      => $page,
+            'pages'     => max(1, (int)ceil($result['total'] / $limit)),
+            'filters'   => [
+                'search'    => trim($_GET['search'] ?? ''),
+                'username'  => trim($_GET['username'] ?? ''),
+                'ip'        => trim($_GET['ip'] ?? ''),
+                'forum_id'  => (int)($_GET['forum_id'] ?? 0),
+                'status'    => trim($_GET['status'] ?? ''),
+                'date_from' => trim($_GET['date_from'] ?? ''),
+                'date_to'   => trim($_GET['date_to'] ?? ''),
+            ],
+            'sort'      => [
+                'field' => $_GET['sort'] ?? 'id',
+                'dir'   => $sortDir,
+            ],
+        ], 'threads');
+    }
+
+    /**
+     * 帖子列表 API（保留，供外部 AJAX 调用）
      */
     public function threadsApi(): void
     {
         $this->requireAdmin();
 
-        [$where, $params] = $this->buildThreadsWhere();
-        $page = max(1, (int)($_GET['page'] ?? 1));
+        $page  = max(1, (int)($_GET['page'] ?? 1));
         $limit = min(50, max(10, (int)($_GET['limit'] ?? 20)));
 
-        $total = (int)(Database::fetchOne("SELECT COUNT(*) as cnt FROM threads t {$where}", $params)['cnt'] ?? 0);
-        $offset = ($page - 1) * $limit;
-
-        [$sortCol, $sortDir] = $this->getThreadsSortCol();
-
-        $threads = Database::fetchAll(
-            "SELECT t.*, f.name as forum_name FROM threads t LEFT JOIN forums f ON t.forum_id = f.id {$where} ORDER BY {$sortCol} {$sortDir} LIMIT ? OFFSET ?",
-            array_merge($params, [$limit, $offset])
-        );
-
-        $this->layuiJson($threads, $total);
+        $result = $this->fetchThreads($page, $limit);
+        $this->jsonTable($result['rows'], $result['total']);
     }
 
     public function threadBatch(): void
     {
         $this->requireAdmin();
 
-        $input = json_decode(file_get_contents('php://input'), true);
+        $input = $this->input();
         $ids = $input['ids'] ?? [];
         $action = $input['action'] ?? '';
 
         if (empty($ids) || !is_array($ids)) {
-            $this->error('请选择帖子');
+            $this->respondMutation(false, '请先选择帖子', fn() => $this->renderThreadsPage());
             return;
         }
 
         if (count($ids) > 100) {
-            $this->error('单次最多操作 100 篇帖子');
+            $this->respondMutation(false, '单次最多操作 100 篇帖子', fn() => $this->renderThreadsPage());
             return;
         }
 
         $ids = array_map('intval', $ids);
-        $count = 0;
+        $adminId = (int)($_SESSION['user_id'] ?? 0);
+        $groupId = (int)($_SESSION['group_id'] ?? 0);
+        $threadSvc = new \App\Services\ThreadSvc();
 
-        switch ($action) {
-            case 'delete':
-                $threadSvc = new \App\Services\ThreadSvc();
-                $adminId = $_SESSION['user_id'] ?? 0;
-                $groupId = $_SESSION['group_id'] ?? 0;
-                $count = $threadSvc->batchDelete($ids, $adminId, $groupId);
-                Event::dispatch(Events::ADMIN_THREAD_DELETED, [
-                    'action' => '批量删除帖子',
-                    'admin_id' => $adminId,
-                    'detail' => "批量删除 {$count} 篇帖子",
-                    'target_type' => 'thread',
-                ]);
-                $this->success("已删除 {$count} 篇帖子");
-                break;
+        // 批量操作全部走服务层：权限校验、存在性校验、跨表计数、mod 日志都在那里，
+        // 控制器只负责「取参数 → 调服务 → 报结果（含审计事件）」。
+        try {
+            switch ($action) {
+                case 'delete':
+                    $count = $threadSvc->batchDelete($ids, $adminId, $groupId);
+                    Event::dispatch(Events::ADMIN_THREAD_DELETED, [
+                        'action' => '批量删除帖子',
+                        'admin_id' => $adminId,
+                        'detail' => "批量删除 {$count} 篇帖子",
+                        'target_type' => 'thread',
+                    ]);
+                    $this->respondMutation(true, "已删除 {$count} 篇帖子", fn() => $this->renderThreadsPage());
+                    break;
 
-            case 'lock':
-                $placeholders = implode(',', array_fill(0, count($ids), '?'));
-                Database::execute("UPDATE threads SET is_locked = 1 WHERE id IN ({$placeholders})", $ids);
-                $count = count($ids);
-                foreach ($ids as $id) { Cache::delete("thread:{$id}"); }
-                Cache::deletePattern('threads:*');
-                Cache::deletePattern('allthreads:*');
-                $this->success("已锁定 {$count} 篇帖子");
-                break;
+                case 'lock':
+                case 'unlock':
+                    $count = $threadSvc->batchLock($ids, $action === 'lock', $adminId, $groupId);
+                    $this->respondMutation(true, ($action === 'lock' ? '已锁定 ' : '已解锁 ') . "{$count} 篇帖子", fn() => $this->renderThreadsPage());
+                    break;
 
-            case 'unlock':
-                $placeholders = implode(',', array_fill(0, count($ids), '?'));
-                Database::execute("UPDATE threads SET is_locked = 0 WHERE id IN ({$placeholders})", $ids);
-                $count = count($ids);
-                foreach ($ids as $id) { Cache::delete("thread:{$id}"); }
-                Cache::deletePattern('threads:*');
-                Cache::deletePattern('allthreads:*');
-                $this->success("已解锁 {$count} 篇帖子");
-                break;
+                case 'top':
+                    // level 省略时沿用「设为板块置顶」的旧默认值
+                    $level = max(0, min(2, (int)($input['level'] ?? 1)));
+                    $count = $threadSvc->batchTop($ids, $level, $adminId, $groupId);
+                    $labels = [0 => '取消置顶', 1 => '板块置顶', 2 => '全局置顶'];
+                    $this->respondMutation(true, '已' . ($labels[$level] ?? '操作') . " {$count} 篇帖子", fn() => $this->renderThreadsPage());
+                    break;
 
-            case 'top':
-                $level = max(0, min(2, (int)($input['level'] ?? 1)));
-                $placeholders = implode(',', array_fill(0, count($ids), '?'));
-                $params = array_merge([$level], $ids);
-                Database::execute("UPDATE threads SET is_top = ? WHERE id IN ({$placeholders})", $params);
-                $count = count($ids);
-                foreach ($ids as $id) { Cache::delete("thread:{$id}"); }
-                Cache::deletePattern('threads:*');
-                Cache::deletePattern('allthreads:*');
-                $labels = [0 => '取消置顶', 1 => '板块置顶', 2 => '全局置顶'];
-                $this->success("已" . ($labels[$level] ?? '操作') . " {$count} 篇帖子");
-                break;
+                case 'highlight':
+                case 'unhighlight':
+                    $count = $threadSvc->batchDigest($ids, $action === 'highlight' ? 1 : 0, $adminId, $groupId);
+                    $this->respondMutation(true, ($action === 'highlight' ? '已加精 ' : '已取消加精 ') . "{$count} 篇帖子", fn() => $this->renderThreadsPage());
+                    break;
 
-            case 'highlight':
-                $placeholders = implode(',', array_fill(0, count($ids), '?'));
-                Database::execute("UPDATE threads SET is_highlight = 1 WHERE id IN ({$placeholders})", $ids);
-                $count = count($ids);
-                foreach ($ids as $id) { Cache::delete("thread:{$id}"); }
-                Cache::deletePattern('threads:*');
-                Cache::deletePattern('allthreads:*');
-                $this->success("已加精 {$count} 篇帖子");
-                break;
-
-            case 'unhighlight':
-                $placeholders = implode(',', array_fill(0, count($ids), '?'));
-                Database::execute("UPDATE threads SET is_highlight = 0 WHERE id IN ({$placeholders})", $ids);
-                $count = count($ids);
-                foreach ($ids as $id) { Cache::delete("thread:{$id}"); }
-                Cache::deletePattern('threads:*');
-                Cache::deletePattern('allthreads:*');
-                $this->success("已取消加精 {$count} 篇帖子");
-                break;
-
-            case 'move':
-                $targetForumId = (int)($input['target_forum_id'] ?? 0);
-                if ($targetForumId <= 0) {
-                    $this->error('请选择目标板块');
-                    return;
-                }
-                $targetForum = Database::fetchOne("SELECT id FROM forums WHERE id = ? AND deleted_at IS NULL", [$targetForumId]);
-                if (!$targetForum) {
-                    $this->error('目标板块不存在');
-                    return;
-                }
-                Database::beginTransaction();
-                try {
-                    foreach ($ids as $id) {
-                        $thread = Database::fetchOne("SELECT forum_id FROM threads WHERE id = ? AND deleted_at IS NULL", [$id]);
-                        if ($thread && (int)$thread['forum_id'] !== $targetForumId) {
-                            $sourceForum = (int)$thread['forum_id'];
-                            Database::execute("UPDATE threads SET forum_id = ?, updated_at = ? WHERE id = ?", [$targetForumId, time(), $id]);
-                            Database::execute("UPDATE forums SET thread_count = CASE WHEN thread_count > 0 THEN thread_count - 1 ELSE 0 END WHERE id = ?", [$sourceForum]);
-                            Database::execute("UPDATE forums SET thread_count = thread_count + 1 WHERE id = ?", [$targetForumId]);
-
-                            $postCount = (int)(Database::fetchOne(
-                                "SELECT COUNT(*) as c FROM posts WHERE thread_id = ? AND deleted_at IS NULL",
-                                [$id]
-                            )['c'] ?? 0);
-                            if ($postCount > 0) {
-                                Database::execute("UPDATE forums SET post_count = CASE WHEN post_count >= ? THEN post_count - ? ELSE 0 END WHERE id = ?", [$postCount, $postCount, $sourceForum]);
-                                Database::execute("UPDATE forums SET post_count = post_count + ? WHERE id = ?", [$postCount, $targetForumId]);
-                            }
-
-                            $count++;
-                        }
+                case 'move':
+                    $targetForumId = (int)($input['target_forum_id'] ?? 0);
+                    if ($targetForumId <= 0) {
+                        $this->respondMutation(false, '请选择目标板块', fn() => $this->renderThreadsPage());
+                        return;
                     }
-                    Database::commit();
-                } catch (\Throwable $e) {
-                    Database::rollBack();
-                    throw $e;
-                }
-                Cache::delete('forums:list');
-                Cache::delete('forums:children:all');
-                Cache::deletePattern('threads:*');
-                Cache::deletePattern('allthreads:*');
-                Cache::deletePattern('forums:children:*');
-                foreach ($ids as $id) {
-                    Cache::delete("thread:{$id}");
-                }
-                $this->success("已移动 {$count} 篇帖子");
-                break;
+                    $count = $threadSvc->batchMove($ids, $targetForumId, $adminId, $groupId);
+                    $this->respondMutation(true, "已移动 {$count} 篇帖子", fn() => $this->renderThreadsPage());
+                    break;
 
-            default:
-                $this->error('未知操作');
-                return;
+                default:
+                    $this->respondMutation(false, '未知操作', fn() => $this->renderThreadsPage());
+                    return;
+            }
+        } catch (\RuntimeException $e) {
+            // 权限不足、目标板块不存在、板块非法等，都由服务层给出可直接展示的原因
+            $this->respondMutation(false, $e->getMessage(), fn() => $this->renderThreadsPage());
         }
     }
 
@@ -262,11 +177,11 @@ class ThreadController extends AdminBase
     {
         $this->requireAdmin();
 
-        $input = json_decode(file_get_contents('php://input'), true);
+        $input = $this->input();
         $id = (int) ($input['thread_id'] ?? 0);
 
         if ($id <= 0) {
-            $this->error('参数错误');
+            $this->respondMutation(false, '参数错误', fn() => $this->renderThreadsPage());
             return;
         }
 
@@ -282,25 +197,25 @@ class ThreadController extends AdminBase
             'target_type' => 'thread',
             'target_id' => $id,
         ]);
-        $this->success('帖子已删除');
+        $this->respondMutation(true, '帖子已删除', fn() => $this->renderThreadsPage());
     }
 
     public function threadToggleTop(): void
     {
         $this->requireAdmin();
 
-        $input = json_decode(file_get_contents('php://input'), true);
+        $input = $this->input();
         $id = (int) ($input['thread_id'] ?? 0);
         $level = isset($input['level']) ? (int)$input['level'] : -1;
 
         if ($id <= 0) {
-            $this->error('参数错误');
+            $this->respondMutation(false, '参数错误', fn() => $this->renderThreadsPage());
             return;
         }
 
-        $thread = Database::fetchOne("SELECT is_top, title FROM threads WHERE id = ? AND deleted_at IS NULL", [$id]);
+        $thread = ThreadModel::findById($id);
         if (!$thread) {
-            $this->error('帖子不存在');
+            $this->respondMutation(false, '帖子不存在', fn() => $this->renderThreadsPage());
             return;
         }
 
@@ -308,8 +223,7 @@ class ThreadController extends AdminBase
             $level = ((int)$thread['is_top'] > 0) ? 0 : 1;
         }
 
-        Database::execute("UPDATE threads SET is_top = ? WHERE id = ?", [$level, $id]);
-        Cache::delete("thread:{$id}");
+        ThreadModel::setTopLevel($id, $level);
 
         $labels = [0 => '取消置顶', 1 => '板块置顶', 2 => '全局置顶'];
         $label = $labels[$level] ?? '置顶';
@@ -320,31 +234,30 @@ class ThreadController extends AdminBase
             'target_type' => 'thread',
             'target_id' => $id,
         ]);
-        $this->success("已{$label}", ['level' => $level]);
+        $this->respondMutation(true, "已{$label}", fn() => $this->renderThreadsPage());
     }
 
     public function threadToggleHighlight(): void
     {
         $this->requireAdmin();
 
-        $input = json_decode(file_get_contents('php://input'), true);
+        $input = $this->input();
         $id = (int) ($input['thread_id'] ?? 0);
         $level = isset($input['level']) ? (int)$input['level'] : -1;
 
         if ($id <= 0) {
-            $this->error('参数错误');
+            $this->respondMutation(false, '参数错误', fn() => $this->renderThreadsPage());
             return;
         }
 
-        $thread = Database::fetchOne("SELECT is_highlight, title FROM threads WHERE id = ? AND deleted_at IS NULL", [$id]);
+        $thread = ThreadModel::findById($id);
         if (!$thread) {
-            $this->error('帖子不存在');
+            $this->respondMutation(false, '帖子不存在', fn() => $this->renderThreadsPage());
             return;
         }
 
         $newVal = $level >= 0 ? max(0, min(3, $level)) : ($thread['is_highlight'] ? 0 : 1);
-        Database::execute("UPDATE threads SET is_highlight = ? WHERE id = ?", [$newVal, $id]);
-        Cache::delete("thread:{$id}");
+        ThreadModel::setDigest($id, $newVal);
 
         $labels = [0 => '取消精华', 1 => '设为精华I', 2 => '设为精华II', 3 => '设为精华III'];
         $label = $labels[$newVal] ?? '操作成功';
@@ -355,6 +268,6 @@ class ThreadController extends AdminBase
             'target_type' => 'thread',
             'target_id' => $id,
         ]);
-        $this->success($label);
+        $this->respondMutation(true, $label, fn() => $this->renderThreadsPage());
     }
 }

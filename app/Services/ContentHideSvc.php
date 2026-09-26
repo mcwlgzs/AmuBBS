@@ -6,8 +6,12 @@
 
 namespace App\Services;
 
-use Core\Database;
+use App\Models\CreditLog;
+use App\Models\Post;
+use App\Models\Thread;
+use App\Models\User;
 use Core\Cache;
+use Core\Database;
 
 class ContentHideSvc
 {
@@ -21,15 +25,13 @@ class ContentHideSvc
      */
     public static function parse(string $content, int $threadId, ?int $userId = null): string
     {
-        // 查询帖子作者（只查一次，传递给所有回调）
-        $thread = Database::fetchOneCached("SELECT user_id FROM threads WHERE id = ? AND deleted_at IS NULL", [$threadId], 120);
-        $authorId = $thread ? (int)$thread['user_id'] : 0;
+        // 查询帖子作者（带 120 秒缓存，解析一页内容时会反复用到）
+        $authorId = Thread::authorIdCached($threadId) ?? 0;
 
         // 预加载当前用户积分（避免 renderLevelHide 重复查询）
         $userCredits = null;
         if ($userId) {
-            $user = Database::fetchOneCached("SELECT credits FROM users WHERE id = ?", [$userId], 60);
-            $userCredits = (int)($user['credits'] ?? 0);
+            $userCredits = User::creditsCached($userId);
         }
 
         // 登录可见（使用非贪婪匹配，排除嵌套 hide 标签）
@@ -152,12 +154,7 @@ class ContentHideSvc
                     . '<div class="hidden-content-badge">评论可见</div>'
                     . $content . '</div>';
             }
-            $replied = Database::fetchOneCached(
-                "SELECT id FROM posts WHERE thread_id = ? AND user_id = ? AND deleted_at IS NULL LIMIT 1",
-                [$threadId, $userId],
-                60
-            );
-            if ($replied) {
+            if (Post::hasUserRepliedInThread($threadId, $userId)) {
                 return '<div class="hidden-content unlocked">'
                     . '<div class="hidden-content-badge">评论可见</div>'
                     . $content . '</div>';
@@ -177,12 +174,7 @@ class ContentHideSvc
      */
     public static function hasPurchased(int $userId, int $threadId): bool
     {
-        $row = Database::fetchOneCached(
-            "SELECT id FROM credit_logs WHERE user_id = ? AND type = 'content_purchase' AND related_type = 'thread' AND related_id = ?",
-            [$userId, $threadId],
-            120
-        );
-        return (bool)$row;
+        return CreditLog::hasContentPurchase($userId, $threadId);
     }
 
     /** 隐藏内容最高积分价格 */
@@ -193,9 +185,9 @@ class ContentHideSvc
      */
     public static function extractPrice(int $threadId): int
     {
-        $thread = Database::fetchOne("SELECT content FROM threads WHERE id = ? AND deleted_at IS NULL", [$threadId]);
-        if (!$thread) return 0;
-        if (preg_match('/\[hide\s+credit=(\d+)\]/', $thread['content'], $m)) {
+        $content = Thread::getContent($threadId);
+        if ($content === null) return 0;
+        if (preg_match('/\[hide\s+credit=(\d+)\]/', $content, $m)) {
             return min((int)$m[1], self::MAX_CREDIT_PRICE);
         }
         return 0;
@@ -212,12 +204,12 @@ class ContentHideSvc
             throw new \RuntimeException('该帖子没有付费隐藏内容');
         }
 
-        $thread = Database::fetchOne("SELECT user_id FROM threads WHERE id = ? AND deleted_at IS NULL", [$threadId]);
-        if (!$thread) {
+        $authorId = Thread::findAuthorId($threadId);
+        if ($authorId === null) {
             throw new \RuntimeException('帖子不存在');
         }
 
-        if ((int)$thread['user_id'] === $userId) {
+        if ($authorId === $userId) {
             throw new \RuntimeException('不能购买自己的内容');
         }
 
@@ -229,39 +221,23 @@ class ContentHideSvc
         Database::beginTransaction();
         try {
             // 事务内再次检查（FOR UPDATE 防并发重复购买）
-            $existing = Database::fetchOne(
-                "SELECT id FROM credit_logs WHERE user_id = ? AND type = 'content_purchase' AND related_type = 'thread' AND related_id = ? FOR UPDATE",
-                [$userId, $threadId]
-            );
-            if ($existing) {
+            if (CreditLog::lockContentPurchase($userId, $threadId)) {
                 throw new \RuntimeException('已购买过此内容');
             }
 
             // 原子扣减积分
-            $affected = Database::execute(
-                "UPDATE users SET credits = credits - ? WHERE id = ? AND credits >= ?",
-                [$realPrice, $userId, $realPrice]
-            );
-            if ($affected === 0) {
+            if (User::deductCreditsIfEnough($userId, $realPrice) === 0) {
                 throw new \RuntimeException('积分不足');
             }
 
             // 记录购买日志（作为购买凭证）
-            $balance = Database::fetchOne("SELECT credits FROM users WHERE id = ?", [$userId])['credits'] ?? 0;
-            Database::execute(
-                "INSERT INTO credit_logs (user_id, amount, balance, type, description, related_type, related_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                [$userId, -$realPrice, $balance, 'content_purchase', '购买隐藏内容', 'thread', $threadId, time()]
-            );
+            CreditLog::write($userId, -$realPrice, User::getCredits($userId), 'content_purchase', '购买隐藏内容', 'thread', $threadId, time());
 
             // 给作者积分（扣除10%手续费）
             $authorAmount = (int)floor($realPrice * 0.9);
             if ($authorAmount > 0) {
-                Database::execute("UPDATE users SET credits = credits + ? WHERE id = ?", [$authorAmount, (int)$thread['user_id']]);
-                $authorBalance = Database::fetchOne("SELECT credits FROM users WHERE id = ?", [(int)$thread['user_id']])['credits'] ?? 0;
-                Database::execute(
-                    "INSERT INTO credit_logs (user_id, amount, balance, type, description, related_type, related_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                    [(int)$thread['user_id'], $authorAmount, $authorBalance, 'content_sale', '隐藏内容被购买', 'thread', $threadId, time()]
-                );
+                User::addCredits($authorId, $authorAmount);
+                CreditLog::write($authorId, $authorAmount, User::getCredits($authorId), 'content_sale', '隐藏内容被购买', 'thread', $threadId, time());
             }
 
             Database::commit();
@@ -275,10 +251,9 @@ class ContentHideSvc
         }
         // 清除用户积分缓存
         Cache::delete("user:profile:{$userId}");
-        Cache::delete("user:profile:{$thread['user_id']}");
-        // 清除 hasPurchased 缓存，使购买后立即可见
-        $sql = "SELECT id FROM credit_logs WHERE user_id = ? AND type = 'content_purchase' AND related_type = 'thread' AND related_id = ?";
-        Cache::delete('dbq1:' . md5($sql . serialize([$userId, $threadId])));
+        Cache::delete("user:profile:{$authorId}");
+        // 清除 hasPurchased 缓存，使购买后立即可见（键由模型用同一份 SQL 常量推导）
+        CreditLog::forgetContentPurchaseCache($userId, $threadId);
         return true;
     }
 }

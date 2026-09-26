@@ -30,8 +30,7 @@ include APP_PATH . 'resources/views/layout/header.php';
         <?php foreach ($results as $t): ?>
         <div class="search-result-item">
             <a href="/thread/<?= (int)$t['id'] ?>" class="search-result-title">
-                <?php if ($t['is_top'] ?? false): ?><span class="tag tag-top">置顶</span> <?php endif; ?>
-                <?php if ($t['is_highlight'] ?? false): ?><span class="tag tag-highlight">精华</span> <?php endif; ?>
+                <?php $badgeThread = $t; include APP_PATH . 'resources/views/components/thread-badges.php'; ?>
                 <?= \App\Controllers\Search::highlight($t['title'], $keyword) ?>
             </a>
             <div class="search-result-meta">

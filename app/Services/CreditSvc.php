@@ -1,11 +1,21 @@
 <?php
 namespace App\Services;
 
-use Core\Database;
+use App\Models\CreditLog;
+use App\Models\User;
 use Core\Cache;
+use Core\Database;
 
 /**
  * 积分服务
+ *
+ * 分层说明（为什么这个类还留着）：
+ *   addCredits / deductCredits / transferCredits 是**领域记账用例** ——
+ *   它们必须在同一个事务里同时改 users.credits 和写 credit_logs，
+ *   而且扣减要带余额条件、转账要校验接收方存在。
+ *   这既不是「单纯取数」（不属于 Model），也不是「纯算法」（不属于 Support），
+ *   所以按原样保留在服务层：SQL 交给 User / CreditLog 模型，事务边界留在这里。
+ *   缓存清理统一放在 commit 之后，避免事务未提交就把旧值放回缓存。
  */
 class CreditSvc
 {
@@ -18,14 +28,10 @@ class CreditSvc
 
         try {
             Database::beginTransaction();
-            Database::execute("UPDATE users SET credits = credits + ? WHERE id = ?", [$amount, $userId]);
-            $user = Database::fetchOne("SELECT credits FROM users WHERE id = ?", [$userId]);
-            $balance = $user['credits'] ?? 0;
+            User::addCredits($userId, $amount);
+            $balance = User::getCredits($userId);
 
-            Database::execute(
-                "INSERT INTO credit_logs (user_id, amount, balance, type, description, related_type, related_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                [$userId, $amount, $balance, $type, $description, $relatedType, $relatedId, time()]
-            );
+            CreditLog::write($userId, $amount, $balance, $type, $description, $relatedType, $relatedId, time());
 
             Database::commit();
             Cache::delete("user:profile:{$userId}");
@@ -46,19 +52,14 @@ class CreditSvc
 
         try {
             Database::beginTransaction();
-            $affected = Database::execute("UPDATE users SET credits = credits - ? WHERE id = ? AND credits >= ?", [$amount, $userId, $amount]);
-            if ($affected === 0) {
+            if (User::deductCreditsIfEnough($userId, $amount) === 0) {
                 Database::rollBack();
                 return false;
             }
 
-            $user = Database::fetchOne("SELECT credits FROM users WHERE id = ?", [$userId]);
-            $balance = $user['credits'] ?? 0;
+            $balance = User::getCredits($userId);
 
-            Database::execute(
-                "INSERT INTO credit_logs (user_id, amount, balance, type, description, related_type, related_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                [$userId, -$amount, $balance, $type, $description, $relatedType, $relatedId, time()]
-            );
+            CreditLog::write($userId, -$amount, $balance, $type, $description, $relatedType, $relatedId, time());
 
             Database::commit();
             Cache::delete("user:profile:{$userId}");
@@ -80,32 +81,20 @@ class CreditSvc
         try {
             Database::beginTransaction();
             // 验证接收方用户存在，防止积分凭空消失
-            $toUser = Database::fetchOne("SELECT id FROM users WHERE id = ? AND deleted_at IS NULL", [$toUserId]);
-            if (!$toUser) {
+            if (!User::exists($toUserId)) {
                 throw new \RuntimeException('接收方用户不存在');
             }
-            $affected = Database::execute(
-                "UPDATE users SET credits = credits - ? WHERE id = ? AND credits >= ?",
-                [$amount, $fromUserId, $amount]
-            );
-            if ($affected === 0) {
+            if (User::deductCreditsIfEnough($fromUserId, $amount) === 0) {
                 Database::rollBack();
                 return false;
             }
-            $fromRow = Database::fetchOne("SELECT credits FROM users WHERE id = ?", [$fromUserId]);
-            $fromBalance = (int)($fromRow['credits'] ?? 0);
-            Database::execute(
-                "INSERT INTO credit_logs (user_id, amount, balance, type, description, related_type, related_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                [$fromUserId, -$amount, $fromBalance, 'transfer', $description . '（转出）', 'user', $toUserId, time()]
-            );
+            $now = time();
+            $fromBalance = User::getCredits($fromUserId);
+            CreditLog::write($fromUserId, -$amount, $fromBalance, 'transfer', $description . '（转出）', 'user', $toUserId, $now);
 
-            Database::execute("UPDATE users SET credits = credits + ? WHERE id = ?", [$amount, $toUserId]);
-            $toRow = Database::fetchOne("SELECT credits FROM users WHERE id = ?", [$toUserId]);
-            $toBalance = (int)($toRow['credits'] ?? 0);
-            Database::execute(
-                "INSERT INTO credit_logs (user_id, amount, balance, type, description, related_type, related_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                [$toUserId, $amount, $toBalance, 'reward', $description . '（转入）', 'user', $fromUserId, time()]
-            );
+            User::addCredits($toUserId, $amount);
+            $toBalance = User::getCredits($toUserId);
+            CreditLog::write($toUserId, $amount, $toBalance, 'reward', $description . '（转入）', 'user', $fromUserId, $now);
 
             Database::commit();
             Cache::delete("user:profile:{$fromUserId}");
@@ -119,47 +108,6 @@ class CreditSvc
             error_log('[CreditSvc] transferCredits failed: ' . $e->getMessage());
             return false;
         }
-    }
-
-    /**
-     * 获取用户积分记录
-     */
-    public function getUserCreditLogs(int $userId, int $page = 1, int $pageSize = 20)
-    {
-        $page = max(1, $page);
-        $pageSize = min(100, max(1, $pageSize));
-        $offset = ($page - 1) * $pageSize;
-
-        $logs = Database::fetchAll(
-            "SELECT * FROM credit_logs WHERE user_id = ? ORDER BY created_at DESC LIMIT ? OFFSET ?",
-            [$userId, $pageSize, $offset]
-        );
-        $total = Database::fetchOne(
-            "SELECT COUNT(*) as count FROM credit_logs WHERE user_id = ?",
-            [$userId]
-        )['count'] ?? 0;
-
-        return [
-            'logs' => $logs,
-            'total' => $total,
-            'page' => $page,
-            'pageSize' => $pageSize,
-            'totalPages' => max(1, (int)ceil($total / $pageSize))
-        ];
-    }
-
-    /**
-     * 获取积分排行榜（带缓存）
-     */
-    public function getCreditRanking($limit = 10)
-    {
-        return Cache::get("credits:ranking:{$limit}", function() use ($limit) {
-            return Database::fetchAll(
-                "SELECT id, username, nickname, avatar, credits, nickname_color, thread_count, post_count
-                 FROM users WHERE deleted_at IS NULL ORDER BY credits DESC LIMIT ?",
-                [$limit]
-            );
-        }, 300);
     }
 
     public function rewardForThread($userId, $threadId)

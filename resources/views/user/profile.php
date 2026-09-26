@@ -102,18 +102,18 @@
 </div>
 
 <!-- 标签页 -->
-<div class="card" x-data="{ tab: 'threads' }">
+<div class="card" data-tabs="threads">
     <div class="tabs">
-        <button class="tab-item" :class="{ active: tab === 'threads' }" @click="tab = 'threads'">我的帖子</button>
-        <button class="tab-item" :class="{ active: tab === 'replies' }" @click="tab = 'replies'">我的评论</button>
-        <button class="tab-item" :class="{ active: tab === 'favorites' }" @click="tab = 'favorites'">我的收藏</button>
-        <button class="tab-item" :class="{ active: tab === 'credits' }" @click="tab = 'credits'">积分记录</button>
-        <button class="tab-item" :class="{ active: tab === 'settings' }" @click="tab = 'settings'">修改资料</button>
-        <button class="tab-item" :class="{ active: tab === 'password' }" @click="tab = 'password'">修改密码</button>
+        <button type="button" class="tab-item" data-tab="threads">我的帖子</button>
+        <button type="button" class="tab-item" data-tab="replies">我的评论</button>
+        <button type="button" class="tab-item" data-tab="favorites">我的收藏</button>
+        <button type="button" class="tab-item" data-tab="credits">积分记录</button>
+        <button type="button" class="tab-item" data-tab="settings">修改资料</button>
+        <button type="button" class="tab-item" data-tab="password">修改密码</button>
     </div>
 
     <!-- 我的帖子 -->
-    <div class="tab-panel" :class="{ active: tab === 'threads' }">
+    <div class="tab-panel" data-tab-panel="threads">
         <?php if (empty($threads)): ?>
             <?php $emptyIcon = 'post'; $emptyText = '暂无帖子'; include APP_PATH . 'resources/views/components/empty-state.php'; ?>
         <?php else: ?>
@@ -133,7 +133,7 @@
     </div>
 
     <!-- 我的回复 -->
-    <div class="tab-panel" :class="{ active: tab === 'replies' }">
+    <div class="tab-panel" data-tab-panel="replies">
         <?php if (empty($replies ?? [])): ?>
             <?php $emptyIcon = 'reply'; $emptyText = '暂无评论'; include APP_PATH . 'resources/views/components/empty-state.php'; ?>
         <?php else: ?>
@@ -150,7 +150,7 @@
     </div>
 
     <!-- 我的收藏 -->
-    <div class="tab-panel" :class="{ active: tab === 'favorites' }">
+    <div class="tab-panel" data-tab-panel="favorites">
         <?php if (empty($favorites)): ?>
             <?php $emptyIcon = 'post'; $emptyText = '暂无收藏'; include APP_PATH . 'resources/views/components/empty-state.php'; ?>
         <?php else: ?>
@@ -172,7 +172,7 @@
     </div>
 
     <!-- 积分记录 -->
-    <div class="tab-panel" :class="{ active: tab === 'credits' }">
+    <div class="tab-panel" data-tab-panel="credits">
         <div style="text-align:center;padding:32px 16px;">
             <div style="font-size:14px;color:var(--text-muted);margin-bottom:16px;">当前积分</div>
             <div style="font-size:36px;font-weight:700;color:var(--primary);margin-bottom:24px;"><?= number_format($user['credits'] ?? 0) ?></div>
@@ -185,97 +185,77 @@
     </div>
 
     <!-- 修改资料 -->
-    <div class="tab-panel" :class="{ active: tab === 'settings' }" x-data="profileForm()">
-        <form @submit.prevent="submitProfile" style="max-width:480px;">
-            <div class="form-group">
-                <label class="form-label">头像</label>
-                <div style="display:flex;align-items:center;gap:12px;">
-                    <img id="avatarPreview" src="<?= htmlspecialchars($user['avatar'] ?: '/assets/images/default-avatar.png') ?>" alt="" class="avatar-lg">
+    <div class="tab-panel" data-tab-panel="settings">
+        <?php /* 头像单独一个小表单：它是「选完即传」，塞进资料表单里会造成 form 嵌套 */ ?>
+        <div class="form-group" style="max-width:480px;">
+            <label class="form-label">头像</label>
+            <div style="display:flex;align-items:center;gap:12px;">
+                <img id="avatarPreview" src="<?= htmlspecialchars($user['avatar'] ?: '/assets/images/default-avatar.png') ?>" alt="头像" class="avatar-lg">
+                <form hx-post="/user/avatar" hx-encoding="multipart/form-data"
+                      hx-target="#avatarPreview" hx-swap="outerHTML" hx-trigger="change from:#avatarFile">
                     <label class="btn btn-ghost btn-sm" style="cursor:pointer;">
                         选择图片
-                        <input type="file" accept="image/*" style="display:none;" @change="uploadAvatar($event)">
+                        <input type="file" id="avatarFile" name="avatar" accept="image/*" style="display:none;">
                     </label>
-                </div>
+                </form>
+            </div>
+        </div>
+
+        <form hx-post="/user/profile" hx-swap="none" hx-indicator="this"
+              hx-disabled-elt="#profileSaveBtn" style="max-width:480px;">
+            <div class="form-group">
+                <label class="form-label" for="pfNickname">昵称 <span style="color:var(--text-muted);font-weight:normal;">(可选，2-20个字符)</span></label>
+                <input type="text" id="pfNickname" name="nickname" class="form-input" value="<?= htmlspecialchars($user['nickname'] ?? '') ?>" placeholder="留空则显示用户名" maxlength="20">
             </div>
             <div class="form-group">
-                <label class="form-label">昵称 <span style="color:var(--text-muted);font-weight:normal;">(可选，2-20个字符)</span></label>
-                <input type="text" x-model="profile.nickname" class="form-input" placeholder="留空则显示用户名" maxlength="20">
+                <label class="form-label" for="pfEmail">邮箱</label>
+                <input type="email" id="pfEmail" name="email" class="form-input" value="<?= htmlspecialchars($user['email'] ?? '') ?>" required>
             </div>
             <div class="form-group">
-                <label class="form-label">邮箱</label>
-                <input type="email" x-model="profile.email" class="form-input" required>
+                <label class="form-label" for="pfSignature">个性签名</label>
+                <input type="text" id="pfSignature" name="signature" class="form-input" value="<?= htmlspecialchars($user['signature'] ?? '') ?>" placeholder="最多200个字符" maxlength="200">
             </div>
-            <div class="form-group">
-                <label class="form-label">个性签名</label>
-                <input type="text" x-model="profile.signature" class="form-input" placeholder="最多200个字符" maxlength="200">
-            </div>
-            <button type="submit" class="btn btn-primary" :disabled="profileLoading">
-                <span x-show="!profileLoading">保存</span>
-                <span x-show="profileLoading">保存中...</span>
+            <button type="submit" id="profileSaveBtn" class="btn btn-primary">
+                <span class="hx-idle">保存</span>
+                <span class="hx-busy">保存中...</span>
             </button>
         </form>
     </div>
 
     <!-- 修改密码 -->
-    <div class="tab-panel" :class="{ active: tab === 'password' }" x-data="passwordForm()">
-        <form @submit.prevent="submitPassword" style="max-width:480px;">
+    <div class="tab-panel" data-tab-panel="password">
+        <form hx-post="/user/password" hx-swap="none" hx-indicator="this"
+              hx-disabled-elt="#pwSaveBtn" style="max-width:480px;">
             <div class="form-group">
-                <label class="form-label">原密码</label>
-                <input type="password" x-model="pw.old_password" class="form-input" required>
+                <label class="form-label" for="pwOld">原密码</label>
+                <input type="password" id="pwOld" name="old_password" class="form-input" required autocomplete="current-password">
             </div>
             <div class="form-group">
-                <label class="form-label">新密码</label>
-                <input type="password" x-model="pw.new_password" class="form-input" placeholder="至少6个字符" required>
+                <label class="form-label" for="pwNew">新密码</label>
+                <div class="input-pwd-wrap">
+                    <input type="password" id="pwNew" name="new_password" class="form-input" placeholder="至少6个字符" required minlength="6" autocomplete="new-password">
+                <button type="button" class="pwd-eye-btn" data-pwd-toggle="#pwNew" tabindex="-1" aria-label="显示密码" aria-pressed="false">
+                    <span class="pwd-eye-on"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="18" height="18"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg></span>
+                    <span class="pwd-eye-off"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="18" height="18"><path d="M17.94 17.94A10.07 10.07 0 0112 20c-7 0-11-8-11-8a18.45 18.45 0 015.06-5.94M9.9 4.24A9.12 9.12 0 0112 4c7 0 11 8 11 8a18.5 18.5 0 01-2.16 3.19m-6.72-1.07a3 3 0 11-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/></svg></span>
+                </button>
+                </div>
             </div>
             <div class="form-group">
-                <label class="form-label">确认新密码</label>
-                <input type="password" x-model="pw.confirm_password" class="form-input" required>
+                <label class="form-label" for="pwConfirm">确认新密码</label>
+                <div class="input-pwd-wrap">
+                    <input type="password" id="pwConfirm" name="confirm_password" class="form-input" required minlength="6" autocomplete="new-password">
+                <button type="button" class="pwd-eye-btn" data-pwd-toggle="#pwConfirm" tabindex="-1" aria-label="显示密码" aria-pressed="false">
+                    <span class="pwd-eye-on"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="18" height="18"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg></span>
+                    <span class="pwd-eye-off"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="18" height="18"><path d="M17.94 17.94A10.07 10.07 0 0112 20c-7 0-11-8-11-8a18.45 18.45 0 015.06-5.94M9.9 4.24A9.12 9.12 0 0112 4c7 0 11 8 11 8a18.5 18.5 0 01-2.16 3.19m-6.72-1.07a3 3 0 11-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/></svg></span>
+                </button>
+                </div>
             </div>
-            <button type="submit" class="btn btn-primary" :disabled="pwLoading">
-                <span x-show="!pwLoading">修改密码</span>
-                <span x-show="pwLoading">提交中...</span>
+            <button type="submit" id="pwSaveBtn" class="btn btn-primary">
+                <span class="hx-idle">修改密码</span>
+                <span class="hx-busy">提交中...</span>
             </button>
         </form>
     </div>
 </div>
-
-<script>
-function profileForm() {
-    return {
-        profile: <?= json_encode(['nickname' => $user['nickname'] ?? '', 'email' => $user['email'] ?? '', 'signature' => $user['signature'] ?? ''], JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_APOS | JSON_HEX_QUOT) ?>,
-        profileError: '', profileSuccess: '', profileLoading: false,
-        async uploadAvatar(e) {
-            const file = e.target.files[0];
-            if (!file) return;
-            const fd = new FormData(); fd.append('avatar', file);
-            const data = await App.upload('/user/avatar', fd, { silent: true });
-            if (data.success) { document.getElementById('avatarPreview').src = data.data.avatar; toast('头像上传成功', 'success'); }
-            else { toast(data.message, 'error'); }
-        },
-        async submitProfile() {
-            this.profileError = ''; this.profileSuccess = ''; this.profileLoading = true;
-            const data = await App.post('/user/profile', this.profile, { silent: true });
-            if (data.success) { toast(data.message, 'success'); } else { toast(data.message, 'error'); }
-            this.profileLoading = false;
-        }
-    }
-}
-function passwordForm() {
-    return {
-        pw: { old_password: '', new_password: '', confirm_password: '' },
-        pwError: '', pwSuccess: '', pwLoading: false,
-        async submitPassword() {
-            this.pwError = ''; this.pwSuccess = '';
-            if (this.pw.new_password.length < 6) { toast('新密码至少6个字符', 'error'); return; }
-            if (this.pw.new_password !== this.pw.confirm_password) { toast('两次密码不一致', 'error'); return; }
-            this.pwLoading = true;
-            const data = await App.post('/user/password', this.pw, { silent: true });
-            if (data.success) { this.pw = { old_password: '', new_password: '', confirm_password: '' }; toast(data.message, 'success'); }
-            else { toast(data.message, 'error'); }
-            this.pwLoading = false;
-        }
-    }
-}
-</script>
 
 <?php include APP_PATH . 'resources/views/layout/footer.php'; ?>

@@ -1,144 +1,274 @@
-<?php include __DIR__ . '/layout_child.php'; ?>
+<?php
+/**
+ * 后台 - 附件管理（layuimini 子页面片段）
+ * ==========================================================================
+ * 由 layout_child.php 包成一个独立文档、跑在外壳的 iframe 里，
+ * 所以这里是纯片段：没有文档声明，没有 html/head/body 标签，也没有任何 htmx 属性。
+ *
+ * 结构照 forums.php（列表页参考实现）：
+ *   统计概览（4 张卡，来自 Attachment::adminStats()）
+ *   fieldset.table-search-fieldset  搜索区
+ *   #attachToolbar                  刷新（本页没有批量接口，所以没有批量按钮）
+ *   #attachTable                    layui table，数据来自 /admin/api/attachments
+ *   #attachRowBar                   行内删除
+ *
+ * 能筛的只有 AttachController::fetchAttachments() 真正读的两个参数：
+ *   search（文件名）/ type（image|file）
+ * **没有排序**：Attachment::adminList() 的 ORDER BY 是写死的 a.id DESC，
+ * 接口根本不看 sort/dir，所以这一页一列都不加 sort: true —— 放一个点了没反应的
+ * 排序箭头比不放更糟。
+ *
+ * 变量：$rows 已不再服务端渲染；统计与筛选值仍来自控制器
+ *       $total, $imageCount, $fileCount, $totalSize, $search, $type
+ */
 
-<!-- 统计概览（PHP 变量） -->
-<div style="display:flex;gap:16px;margin-bottom:20px;flex-wrap:wrap;">
-    <div style="flex:1;min-width:140px;background:#f0f9ff;border-radius:8px;padding:12px 16px;">
-        <div style="font-size:12px;color:#64748b;">附件总数</div>
-        <div style="font-size:20px;font-weight:600;color:#0369a1;"><?= number_format($total ?? 0) ?></div>
+$search    = (string)($search ?? '');
+$type      = (string)($type ?? '');
+$total     = (int)($total ?? 0);
+$imageCount = (int)($imageCount ?? 0);
+$fileCount  = (int)($fileCount ?? 0);
+$totalSize  = (int)($totalSize ?? 0);
+
+/** 字节数 → 人类可读（和原页面同一套规则，前端 templet 里还有一份等价的） */
+$formatSize = static function (int $size): string {
+    if ($size < 1024) {
+        return $size . 'B';
+    }
+    if ($size < 1048576) {
+        return round($size / 1024, 1) . 'KB';
+    }
+
+    return round($size / 1048576, 1) . 'MB';
+};
+
+/** 顶部四张统计卡 */
+$cards = [
+    ['label' => '附件总数', 'value' => number_format($total), 'icon' => 'fa-paperclip',
+     'color' => '#1e9fff', 'sub' => '全部上传文件', 'id' => 'attachStatTotal'],
+    ['label' => '图片数量', 'value' => number_format($imageCount), 'icon' => 'fa-image',
+     'color' => '#5fb878', 'sub' => '可预览的图片', 'id' => ''],
+    ['label' => '文件数量', 'value' => number_format($fileCount), 'icon' => 'fa-file-archive-o',
+     'color' => '#ffb800', 'sub' => '非图片附件', 'id' => ''],
+    ['label' => '占用空间', 'value' => $formatSize($totalSize), 'icon' => 'fa-hdd-o',
+     'color' => '#16baaa', 'sub' => '磁盘用量', 'id' => ''],
+];
+
+/** 首屏 where：带着查询串打开（/admin/attachments?type=image）时表格也要按它查 */
+$initialWhere = array_filter([
+    'search' => trim($search),
+    'type'   => trim($type),
+], static fn($v): bool => $v !== '');
+
+// 内联脚本里的数据一律走 json_encode；HEX 系列保证 </script> 之类不会截断脚本
+$jsonFlags = JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT;
+?>
+
+<!-- 统计概览（原来是一排 Bootstrap 卡片） -->
+<div class="layui-row layui-col-space10" style="margin-bottom:2px">
+  <?php foreach ($cards as $card): ?>
+    <div class="layui-col-md3 layui-col-xs6">
+      <div class="layui-card">
+        <div class="layui-card-body" style="padding:12px 14px">
+          <p class="admin-muted" style="font-size:12px">
+            <i class="fa <?= htmlspecialchars($card['icon'], ENT_QUOTES, 'UTF-8') ?>"
+               style="color:<?= htmlspecialchars($card['color'], ENT_QUOTES, 'UTF-8') ?>"></i>
+            <?= htmlspecialchars($card['label'], ENT_QUOTES, 'UTF-8') ?>
+          </p>
+          <p<?= $card['id'] !== '' ? ' id="' . htmlspecialchars($card['id'], ENT_QUOTES, 'UTF-8') . '"' : '' ?>
+             style="font-size:22px;font-weight:600;line-height:1.5;color:<?= htmlspecialchars($card['color'], ENT_QUOTES, 'UTF-8') ?>">
+            <?= htmlspecialchars($card['value'], ENT_QUOTES, 'UTF-8') ?>
+          </p>
+          <p class="admin-muted" style="font-size:12px"><?= htmlspecialchars($card['sub'], ENT_QUOTES, 'UTF-8') ?></p>
+        </div>
+      </div>
     </div>
-    <div style="flex:1;min-width:140px;background:#f0fdf4;border-radius:8px;padding:12px 16px;">
-        <div style="font-size:12px;color:#64748b;">图片数量</div>
-        <div style="font-size:20px;font-weight:600;color:#15803d;"><?= number_format($imageCount ?? 0) ?></div>
-    </div>
-    <div style="flex:1;min-width:140px;background:#fefce8;border-radius:8px;padding:12px 16px;">
-        <div style="font-size:12px;color:#64748b;">文件数量</div>
-        <div style="font-size:20px;font-weight:600;color:#a16207;"><?= number_format($fileCount ?? 0) ?></div>
-    </div>
-    <div style="flex:1;min-width:140px;background:#fdf2f8;border-radius:8px;padding:12px 16px;">
-        <div style="font-size:12px;color:#64748b;">占用空间</div>
-        <div style="font-size:20px;font-weight:600;color:#be185d;"><?= isset($totalSize) ? ($totalSize < 1024 ? $totalSize.'B' : ($totalSize < 1048576 ? round($totalSize/1024,1).'KB' : round($totalSize/1048576,1).'MB')) : '0B' ?></div>
-    </div>
+  <?php endforeach; ?>
 </div>
 
-<div class="layui-card">
-    <div class="layui-card-header"><h3>附件管理</h3></div>
-    <div class="layui-card-body">
-
-        <!-- 搜索与筛选 -->
-        <div class="layui-form" style="margin-bottom:15px;">
-            <div class="layui-inline">
-                <input type="text" id="searchInput" placeholder="搜索文件名..." class="layui-input" style="width:200px;height:38px;">
-            </div>
-            <div class="layui-inline">
-                <select id="typeSelect" lay-ignore style="height:38px;border:1px solid #e6e6e6;border-radius:2px;padding:0 10px;">
-                    <option value="">全部类型</option>
-                    <option value="image">图片</option>
-                    <option value="file">文件</option>
-                </select>
-            </div>
-            <div class="layui-inline">
-                <button class="layui-btn layui-btn-sm" id="btnSearch">搜索</button>
-                <button class="layui-btn layui-btn-sm layui-btn-primary" id="btnClear">清除</button>
-            </div>
+<!-- 搜索（只放接口真正读的字段） -->
+<fieldset class="table-search-fieldset">
+  <legend>搜索信息</legend>
+  <div style="margin:10px 10px 10px 10px">
+    <form class="layui-form layui-form-pane" lay-filter="attachSearchForm" onsubmit="return false">
+      <div class="layui-form-item">
+        <div class="layui-inline">
+          <label class="layui-form-label">文件名</label>
+          <div class="layui-input-inline">
+            <input type="text" name="search" class="layui-input" placeholder="搜索文件名..."
+                   value="<?= htmlspecialchars($search, ENT_QUOTES, 'UTF-8') ?>">
+          </div>
         </div>
 
-        <table id="attachTable" lay-filter="attachTable"></table>
-    </div>
-</div>
+        <div class="layui-inline">
+          <label class="layui-form-label">类型</label>
+          <div class="layui-input-inline">
+            <select name="type">
+              <option value="" <?= $type === '' ? 'selected' : '' ?>>全部类型</option>
+              <option value="image" <?= $type === 'image' ? 'selected' : '' ?>>图片</option>
+              <option value="file" <?= $type === 'file' ? 'selected' : '' ?>>文件</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="layui-inline">
+          <button class="layui-btn layui-btn-primary" lay-submit lay-filter="attach-search">
+            <i class="layui-icon layui-icon-search"></i> 搜索
+          </button>
+          <button type="button" class="layui-btn layui-btn-primary" id="attachSearchReset">重置</button>
+        </div>
+      </div>
+    </form>
+  </div>
+</fieldset>
+
+<!-- 工具栏：接口没有批量删除，所以这里只放一个刷新 -->
+<script type="text/html" id="attachToolbar">
+  <div class="layui-btn-container">
+    <button class="layui-btn layui-btn-sm layui-btn-primary" lay-event="refresh">
+      <i class="fa fa-refresh"></i> 刷新
+    </button>
+  </div>
+</script>
+
+<!-- 行内操作 -->
+<script type="text/html" id="attachRowBar">
+  <a class="layui-btn layui-btn-xs layui-btn-danger" lay-event="delete">删除</a>
+</script>
+
+<table class="layui-hide" id="attachTable" lay-filter="attachTable"></table>
 
 <script>
-layui.use(['table', 'layer'], function(){
-    var $ = layui.$, table = layui.table, layer = layui.layer;
+layui.use(['table', 'form'], function () {
+  var table = layui.table;
+  var form  = layui.form;
+  var $     = layui.jquery;
 
-    // 格式化时间戳
-    function formatTime(timestamp){
-        if(!timestamp) return '-';
-        var d = new Date(timestamp * 1000);
-        var M = d.getMonth()+1, D = d.getDate(), h = d.getHours(), m = d.getMinutes();
-        return d.getFullYear()+'-'+(M<10?'0'+M:M)+'-'+(D<10?'0'+D:D)+' '+(h<10?'0'+h:h)+':'+(m<10?'0'+m:m);
+  var TABLE_ID = 'attachTable';
+
+  /** 当前查询条件；这一页接口不认 sort/dir，where 里只有筛选 */
+  var lastWhere = <?= json_encode((object)$initialWhere, $jsonFlags) ?>;
+
+  /** HTML 转义：templet 里的内容都来自用户输入 */
+  function esc(s) {
+    return String(s === null || s === undefined ? '' : s).replace(/[&<>"']/g, function (c) {
+      return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
+    });
+  }
+
+  /** 字节数 → 人类可读（和 PHP 里那份 $formatSize 等价） */
+  function fmtSize(size) {
+    size = parseInt(size, 10) || 0;
+    if (size < 1024) { return size + 'B'; }
+    if (size < 1048576) { return Math.round(size / 1024 * 10) / 10 + 'KB'; }
+
+    return Math.round(size / 1048576 * 10) / 10 + 'MB';
+  }
+
+  /** Unix 秒 → YYYY-MM-DD HH:mm（原来是 PHP 的 date()） */
+  function fmtTime(ts) {
+    ts = parseInt(ts, 10) || 0;
+    if (!ts) { return '<span class="admin-muted">-</span>'; }
+    var d = new Date(ts * 1000);
+    var p = function (n) { return (n < 10 ? '0' : '') + n; };
+
+    return '<span class="admin-muted">'
+         + d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate())
+         + ' ' + p(d.getHours()) + ':' + p(d.getMinutes())
+         + '</span>';
+  }
+
+  table.render({
+    elem: '#attachTable',
+    url: '/admin/api/attachments',
+    toolbar: '#attachToolbar',
+    defaultToolbar: ['filter', 'print'],
+    where: lastWhere,
+    cols: [[
+      { field: 'id', width: 80, title: 'ID', templet: function (d) {
+          return '<span class="admin-muted admin-num">' + (parseInt(d.id, 10) || 0) + '</span>';
+      } },
+      { field: 'filepath', width: 90, title: '预览', align: 'center', templet: function (d) {
+          var path = String(d.filepath === null || d.filepath === undefined ? '' : d.filepath);
+
+          if (parseInt(d.is_image, 10) === 1 && path !== '') {
+            return '<img src="' + esc(path) + '" alt="" loading="lazy"'
+                 + ' style="max-width:60px;max-height:40px;border-radius:4px">';
+          }
+
+          // 非图片：用一个文件图标代替原来的内联 SVG
+          return '<i class="layui-icon layui-icon-file" style="font-size:20px;color:#94a3b8"></i>';
+      } },
+      { field: 'filename', minWidth: 220, title: '文件名', templet: function (d) {
+          var name = String(d.filename === null || d.filename === undefined ? '' : d.filename);
+
+          return '<span class="admin-ellipsis" title="' + esc(name) + '">' + esc(name) + '</span>';
+      } },
+      { field: 'username', width: 130, title: '上传者', templet: function (d) {
+          var uid = parseInt(d.user_id, 10) || 0;
+          if (uid <= 0) { return '<span class="admin-muted">-</span>'; }
+
+          var name = (d.username || '') !== '' ? d.username : '未知';
+
+          return '<a href="/user/' + uid + '">' + esc(name) + '</a>';
+      } },
+      { field: 'filesize', width: 100, title: '大小', align: 'right', templet: function (d) {
+          return '<span class="admin-muted admin-num">' + fmtSize(d.filesize) + '</span>';
+      } },
+      { field: 'is_image', width: 90, title: '类型', align: 'center', templet: function (d) {
+          return parseInt(d.is_image, 10) === 1
+              ? '<span class="layui-badge layui-bg-green">图片</span>'
+              : '<span class="layui-badge layui-bg-gray">文件</span>';
+      } },
+      { field: 'created_at', width: 170, title: '上传时间', templet: function (d) {
+          return fmtTime(d.created_at);
+      } },
+      { title: '操作', minWidth: 110, toolbar: '#attachRowBar', align: 'center' }
+    ]],
+    page: true,
+    limit: 20,
+    limits: [10, 20, 30, 50],
+    skin: 'line',
+    text: { none: '没有匹配的附件，换个筛选条件试试' },
+    done: function (res) {
+      // 「附件总数」跟着当前筛选走（原来每次 htmx 重渲染整页时也是这个值）；
+      // 图片/文件/占用空间是全局统计，服务端算好就行
+      $('#attachStatTotal').text((parseInt(res.count, 10) || 0).toLocaleString('en-US'));
     }
+  });
 
-    // 格式化文件大小
-    function formatSize(size){
-        size = parseInt(size) || 0;
-        if(size < 1024) return size + 'B';
-        if(size < 1048576) return (size/1024).toFixed(1) + 'KB';
-        return (size/1048576).toFixed(1) + 'MB';
+  // ---------------- 工具栏 / 行内操作 ----------------
+  table.on('toolbar(attachTable)', function (obj) {
+    if (obj.event === 'refresh') {
+      table.reload(TABLE_ID);
     }
+  });
 
-    table.render({
-        elem: '#attachTable',
-        id: 'attachTable',
-        url: '/admin/api/attachments',
-        page: true,
-        limit: 20,
-        limits: [10, 20, 50],
-        cols: [[
-            {field:'id', title:'ID', width:70, sort:true},
-            {field:'filepath', title:'预览', width:80, templet: function(d){
-                if(d.is_image){
-                    return '<img src="'+layui.util.escape(d.filepath)+'" style="max-width:60px;max-height:40px;border-radius:4px;" loading="lazy">';
-                }
-                return '<i class="layui-icon layui-icon-file" style="font-size:24px;color:#999;"></i>';
-            }},
-            {field:'filename', title:'文件名', minWidth:180, templet: function(d){
-                return '<span title="'+layui.util.escape(d.filename)+'" style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;display:block;">'+layui.util.escape(d.filename)+'</span>';
-            }},
-            {field:'username', title:'上传者', width:100, templet: function(d){
-                if(d.user_id) return '<a href="/user/'+d.user_id+'">'+layui.util.escape(d.username||'未知')+'</a>';
-                return '<span style="color:#94a3b8;">-</span>';
-            }},
-            {field:'filesize', title:'大小', width:90, templet: function(d){ return formatSize(d.filesize); }},
-            {field:'is_image', title:'类型', width:70, templet: function(d){
-                return d.is_image ? '<span style="color:#15803d;">图片</span>' : '<span style="color:#64748b;">文件</span>';
-            }},
-            {field:'created_at', title:'上传时间', width:160, templet: function(d){ return formatTime(d.created_at); }},
-            {title:'操作', width:80, align:'center', toolbar:'#attachBar'}
-        ]],
-        text: {none: '暂无附件'}
-    });
+  table.on('tool(attachTable)', function (obj) {
+    if (obj.event !== 'delete') { return; }
 
-    // 搜索
-    $('#btnSearch').on('click', function(){
-        table.reload('attachTable', {
-            where: {search: $('#searchInput').val(), type: $('#typeSelect').val()},
-            page: {curr: 1}
-        });
-    });
-    $('#btnClear').on('click', function(){
-        $('#searchInput').val('');
-        $('#typeSelect').val('');
-        table.reload('attachTable', {where: {search:'', type:''}, page: {curr: 1}});
-    });
+    var id = parseInt(obj.data.id, 10) || 0;
 
-    // 行操作
-    table.on('tool(attachTable)', function(obj){
-        if(obj.event === 'del'){
-            layer.confirm('确定要删除这个附件吗？删除后不可恢复。', {icon:3, title:'确认删除'}, function(index){
-                $.ajax({
-                    url: '/admin/attachments/delete',
-                    type: 'POST',
-                    contentType: 'application/json',
-                    data: JSON.stringify({id: obj.data.id}),
-                    dataType: 'json',
-                    success: function(res){
-                        if(res.code===0||res.success){
-                            layer.msg('删除成功', {icon:1});
-                            table.reload('attachTable');
-                        } else {
-                            layer.msg(res.msg||res.message||'操作失败', {icon:2});
-                        }
-                    },
-                    error: function(){ layer.msg('请求失败', {icon:2}); }
-                });
-                layer.close(index);
-            });
-        }
-    });
+    AdminUi.confirmPost('确定要删除这个附件吗？删除后不可恢复。',
+      '/admin/attachments/delete', { id: id }, function () {
+        table.reload(TABLE_ID);
+      });
+  });
+
+  // ---------------- 搜索 / 重置 ----------------
+  form.on('submit(attach-search)', function (data) {
+    lastWhere = data.field;
+    table.reload(TABLE_ID, { where: lastWhere, page: { curr: 1 } });
+
+    return false;   // 阻止 layui 默认的表单提交
+  });
+
+  $('#attachSearchReset').on('click', function () {
+    var formEl = $('form[lay-filter="attachSearchForm"]')[0];
+    if (formEl) { formEl.reset(); }
+    form.render('select', 'attachSearchForm');   // 让 layui 渲染的下拉也回到「全部类型」
+
+    lastWhere = {};
+    table.reload(TABLE_ID, { where: lastWhere, page: { curr: 1 } });
+  });
 });
 </script>
-<script type="text/html" id="attachBar">
-    <button class="layui-btn layui-btn-xs layui-btn-danger" lay-event="del">删除</button>
-</script>
-
-<?php include __DIR__ . '/layout_child_footer.php'; ?>

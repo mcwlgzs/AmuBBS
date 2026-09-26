@@ -6,8 +6,9 @@
 namespace App\Controllers;
 
 use App\Events\Events;
+use App\Models\Post;
+use App\Models\User as UserModel;
 use App\Services\SettingSvc;
-use Core\Database;
 use Core\Event;
 
 class User extends Base
@@ -18,9 +19,28 @@ class User extends Base
     public function registerPage(): void
     {
         $this->render('user/register', [
+            // ?modal=1：只渲染表单本身，供登录弹窗用 htmx 取回（不带 layout）
+            'isModal' => !empty($_GET['modal']),
+            'redirectTo' => $this->formRedirectTarget(),
             'verifyEnabled' => \App\Services\SettingSvc::getBool('user_register_verify', false),
             'captchaRequired' => \App\Services\CaptchaSvc::isRequired('register'),
         ]);
+    }
+
+    /**
+     * 忘记密码页面
+     *
+     * 以前这个流程只存在于登录弹窗里（两个 POST 接口，没有 GET 页面）。
+     * 现在给它一个真正的 URL；htmx 请求时只回卡片片段（「重新获取验证码」用它换回第 1 步）。
+     */
+    public function forgotPage(): void
+    {
+        if ($this->isHtmx()) {
+            $this->render('user/_forgot_card', ['step' => 'email']);
+            return;
+        }
+
+        $this->render('user/forgot', ['step' => 'email']);
     }
 
     /**
@@ -30,14 +50,13 @@ class User extends Base
     {
         $email = trim($_POST['email'] ?? '');
         if (empty($email) || !filter_var($email, FILTER_VALIDATE_EMAIL)) {
-            $this->error('请输入有效的邮箱地址');
+            $this->respondSubmit(false, '请输入有效的邮箱地址');
             return;
         }
 
-        // 检查邮箱是否已注册
-        $exist = \Core\Database::fetchOne("SELECT id FROM users WHERE email = ? AND deleted_at IS NULL", [$email]);
-        if ($exist) {
-            $this->error('该邮箱已被注册');
+        // 检查邮箱是否已注册（收敛到 Model，避免各处手写 SQL）
+        if (\App\Models\User::emailExists($email)) {
+            $this->respondSubmit(false, '该邮箱已被注册');
             return;
         }
 
@@ -45,7 +64,7 @@ class User extends Base
         $ip = $_SERVER['REMOTE_ADDR'] ?? '';
         $cacheKey = "reg_code:" . md5($ip . ':' . $email);
         if (\Core\Cache::get($cacheKey) !== null) {
-            $this->error('发送太频繁，请稍后再试');
+            $this->respondSubmit(false, '发送太频繁，请稍后再试');
             return;
         }
 
@@ -59,11 +78,12 @@ class User extends Base
             $mailer = new \Core\Mailer();
             $mailer->sendVerifyCode($email, $code, '注册');
             \Core\Cache::set($cacheKey, time(), 60);
-            $this->success('验证码已发送到你的邮箱');
+            // 不跳转（hx-swap="none"）：只回一条提示，倒计时由前端 JS 负责
+            $this->respondSubmit(true, '验证码已发送到你的邮箱');
         } catch (\Throwable $e) {
             unset($_SESSION['reg_code']);
             error_log('[User] registerSendCode mail error: ' . $e->getMessage());
-            $this->error('邮件发送失败，请稍后重试');
+            $this->respondSubmit(false, '邮件发送失败，请稍后重试');
             return;
         }
     }
@@ -83,7 +103,7 @@ class User extends Base
         try {
             \App\Services\CaptchaSvc::check('register');
         } catch (\RuntimeException $e) {
-            $this->error($e->getMessage());
+            $this->respondSubmit(false, $e->getMessage());
             return;
         }
 
@@ -91,7 +111,7 @@ class User extends Base
         try {
             \App\Services\IpAccessSvc::check($_SERVER['REMOTE_ADDR'] ?? '', 'register');
         } catch (\RuntimeException $e) {
-            $this->error($e->getMessage());
+            $this->respondSubmit(false, $e->getMessage());
             return;
         }
 
@@ -103,20 +123,20 @@ class User extends Base
             $expires = $_SESSION['reg_code_expires'] ?? 0;
 
             if (empty($code) || empty($sessionCode)) {
-                $this->error('请先获取邮箱验证码');
+                $this->respondSubmit(false, '请先获取邮箱验证码');
                 return;
             }
             if (!hash_equals($sessionCode, $code)) {
-                $this->error('验证码错误');
+                $this->respondSubmit(false, '验证码错误');
                 return;
             }
             if ($sessionEmail !== $email) {
-                $this->error('邮箱与获取验证码时不一致');
+                $this->respondSubmit(false, '邮箱与获取验证码时不一致');
                 return;
             }
             if (time() > $expires) {
                 unset($_SESSION['reg_code'], $_SESSION['reg_email'], $_SESSION['reg_code_expires']);
-                $this->error('验证码已过期，请重新获取');
+                $this->respondSubmit(false, '验证码已过期，请重新获取');
                 return;
             }
         }
@@ -149,9 +169,9 @@ class User extends Base
             ]);
 
             \App\Services\IpAccessSvc::increment($_SERVER['REMOTE_ADDR'] ?? '', 'register');
-            $this->success('注册成功', ['user_id' => $userId]);
+            $this->respondSubmit(true, '注册成功', $this->resolveLoginRedirect(), ['user_id' => $userId]);
         } catch (\RuntimeException $e) {
-            $this->error($e->getMessage());
+            $this->respondSubmit(false, $e->getMessage());
             return;
         }
     }
@@ -162,8 +182,50 @@ class User extends Base
     public function loginPage(): void
     {
         $this->render('user/login', [
+            'isModal' => !empty($_GET['modal']),
+            'redirectTo' => $this->formRedirectTarget(),
             'captchaRequired' => \App\Services\CaptchaSvc::isRequired('login'),
         ]);
+    }
+
+    /**
+     * 登录成功后跳回哪里
+     *
+     * 优先级：Session 里记的受保护地址（登录中间件写入）> 表单隐藏字段 > 首页。
+     * 只接受站内相对路径，防止 open redirect。
+     */
+    private function resolveLoginRedirect(): string
+    {
+        $target = '';
+        if (!empty($_SESSION['login_redirect'])) {
+            $target = (string)$_SESSION['login_redirect'];
+            unset($_SESSION['login_redirect']);
+        } else {
+            $posted = $this->input()['redirect'] ?? '';
+            $target = is_string($posted) ? $posted : '';
+        }
+
+        if ($target === '' || !str_starts_with($target, '/') || str_starts_with($target, '//')) {
+            return '/';
+        }
+        return $target;
+    }
+
+    /**
+     * 表单里 hidden redirect 的取值
+     *
+     * 让「登录后回到当前页」在两种形态下都成立：
+     *   - 独立页面 /login：没有 ?redirect=，默认回首页
+     *   - 弹窗：它是用 htmx 拉 /login?modal=1 的，此时 REQUEST_URI 是 /login 而不是宿主页面，
+     *     所以打开弹窗时前端会把宿主地址放进 ?redirect= 带过来
+     */
+    private function formRedirectTarget(): string
+    {
+        $target = (string)($_GET['redirect'] ?? '');
+        if ($target === '' || !str_starts_with($target, '/') || str_starts_with($target, '//')) {
+            return '/';
+        }
+        return $target;
     }
 
     /**
@@ -171,8 +233,10 @@ class User extends Base
      */
     public function login(): void
     {
-        $username = trim($_POST['username'] ?? '');
-        $password = $_POST['password'] ?? '';
+        // 请求里塞数组（username[]=x）会让 string 类型参数直接抛 TypeError →
+        // 之前 DEBUG 模式下会把整条调用栈和绝对路径回显给访客。这里非字符串一律按空处理。
+        $username = is_string($_POST['username'] ?? null) ? trim($_POST['username']) : '';
+        $password = is_string($_POST['password'] ?? null) ? $_POST['password'] : '';
         $rememberMe = !empty($_POST['remember_me']);
 
         // 验证码校验
@@ -185,7 +249,7 @@ class User extends Base
 
         try {
             $service = new \App\Services\UserSvc();
-            $user = $service->login($username, $password, $_SERVER['REMOTE_ADDR'] ?? '');
+            $user = $service->login($username, $password, \Core\Helper::clientIp());
 
             // 防止 session fixation 攻击
             session_regenerate_id(true);
@@ -214,23 +278,16 @@ class User extends Base
                 'ip' => $_SERVER['REMOTE_ADDR'] ?? '',
             ]);
 
-            $redirect = null;
-            if (!empty($_SESSION['login_redirect'])) {
-                $redirect = $_SESSION['login_redirect'];
-                unset($_SESSION['login_redirect']);
-                // 防止 open redirect：只允许站内相对路径
-                if (!str_starts_with($redirect, '/') || str_starts_with($redirect, '//')) {
-                    $redirect = '/';
-                }
-            }
+            $redirect = $this->resolveLoginRedirect();
 
-            $this->success('登录成功', [
-                'user_id' => $user['id'],
+            // htmx：HX-Redirect 整页跳转；非 htmx：仍是原 JSON（保留 redirect 字段）
+            $this->respondSubmit(true, '登录成功', $redirect, [
+                'user_id'  => $user['id'],
                 'username' => $user['username'],
                 'redirect' => $redirect,
             ]);
         } catch (\RuntimeException $e) {
-            $this->error($e->getMessage());
+            $this->respondSubmit(false, $e->getMessage());
             return;
         }
     }
@@ -252,14 +309,33 @@ class User extends Base
         // 清除 Remember Me token
         \Core\RememberToken::clear($userId);
 
+        // 彻底退出：清空会话数据、删除服务端会话文件、失效客户端 Cookie。
+        // 原来只调了 session_destroy()：会话 ID 未重置、$_SESSION 与 PHPSESSID Cookie
+        // 都还在，且销毁后本请求内的写入会再建一个文件，等于没退干净。
+        $_SESSION = [];
+        if (ini_get('session.use_cookies') && !headers_sent()) {
+            $params = session_get_cookie_params();
+            setcookie(session_name(), '', [
+                'expires'  => time() - 42000,
+                'path'     => $params['path'] ?: '/',
+                'domain'   => (string)($params['domain'] ?? ''),
+                'secure'   => (bool)($params['secure'] ?? false),
+                'httponly' => true,
+                'samesite' => 'Lax',
+            ]);
+        }
         session_destroy();
+        if (session_status() === PHP_SESSION_ACTIVE) {
+            session_write_close();
+        }
 
         Event::dispatch(Events::USER_LOGGED_OUT, [
             'user_id' => $userId,
             'username' => $username,
         ]);
 
-        $this->json(['success' => true, 'message' => '已退出登录']);
+        // htmx：回 HX-Redirect 到首页（否则响应体里的 JSON 没人看）；非 htmx：保持原 JSON
+        $this->respondSubmit(true, '已退出登录', '/');
     }
 
     /**
@@ -269,14 +345,19 @@ class User extends Base
     {
         $email = trim($_POST['email'] ?? '');
         if (empty($email) || !filter_var($email, FILTER_VALIDATE_EMAIL)) {
-            $this->error('请输入有效的邮箱地址');
+            $this->respondFragment(false, '请输入有效的邮箱地址', static function (): void {});
             return;
         }
 
-        $user = \Core\Database::fetchOne("SELECT id, username FROM users WHERE email = ? AND deleted_at IS NULL", [$email]);
+        // 发送成功后切到「填验证码 + 新密码」那一步；片段替换 #forgotCard
+        $toResetStep = function (): void {
+            $this->render('user/_forgot_card', ['step' => 'reset']);
+        };
+
+        $user = UserModel::findByEmail($email);
         if (!$user) {
-            // 不暴露用户是否存在，统一提示
-            $this->success('如果该邮箱已注册，验证码已发送');
+            // 不暴露用户是否存在，统一提示（照样前进到下一步，避免用行为差异探测账号）
+            $this->respondFragment(true, '如果该邮箱已注册，验证码已发送', $toResetStep);
             return;
         }
 
@@ -284,7 +365,7 @@ class User extends Base
         $ip = $_SERVER['REMOTE_ADDR'] ?? '';
         $cacheKey = "forgot_code:" . md5($ip . ':' . $email);
         if (\Core\Cache::get($cacheKey) !== null) {
-            $this->error('发送太频繁，请稍后再试');
+            $this->respondFragment(false, '发送太频繁，请稍后再试', static function (): void {});
             return;
         }
 
@@ -294,16 +375,17 @@ class User extends Base
         $_SESSION['forgot_user_id'] = $user['id'];
         $_SESSION['forgot_code_time'] = time();
         $_SESSION['forgot_code_expires'] = time() + 900; // 15分钟
+        unset($_SESSION['forgot_code_attempts']);
 
         try {
             $mailer = new \Core\Mailer();
             $mailer->sendVerifyCode($email, $code, '密码重置');
             \Core\Cache::set($cacheKey, time(), 60);
-            $this->success('验证码已发送到你的邮箱');
+            $this->respondFragment(true, '验证码已发送到你的邮箱', $toResetStep);
         } catch (\Throwable $e) {
             unset($_SESSION['forgot_code']);
             error_log('[User] forgotSendCode mail error: ' . $e->getMessage());
-            $this->error('邮件发送失败，请稍后重试');
+            $this->respondFragment(false, '邮件发送失败，请稍后重试', static function (): void {});
             return;
         }
     }
@@ -318,25 +400,25 @@ class User extends Base
         $passwordConfirm = $_POST['password_confirm'] ?? '';
 
         if (empty($code) || empty($password)) {
-            $this->error('请填写验证码和新密码');
+            $this->respondSubmit(false, '请填写验证码和新密码');
             return;
         }
 
         // 使用统一密码策略校验
         $minLen = SettingSvc::getInt('user_password_min_length', 6);
         if (strlen($password) < $minLen) {
-            $this->error("密码长度至少 {$minLen} 个字符");
+            $this->respondSubmit(false, "密码长度至少 {$minLen} 个字符");
             return;
         }
         if (SettingSvc::getBool('user_password_require_mixed', false)) {
             if (!preg_match('/[a-zA-Z]/', $password) || !preg_match('/[0-9]/', $password)) {
-                $this->error('密码必须同时包含字母和数字');
+                $this->respondSubmit(false, '密码必须同时包含字母和数字');
                 return;
             }
         }
 
         if ($password !== $passwordConfirm) {
-            $this->error('两次密码不一致');
+            $this->respondSubmit(false, '两次密码不一致');
             return;
         }
 
@@ -348,41 +430,36 @@ class User extends Base
         $attempts = (int)($_SESSION['forgot_code_attempts'] ?? 0);
         if ($attempts >= 5) {
             unset($_SESSION['forgot_code'], $_SESSION['forgot_email'], $_SESSION['forgot_user_id'], $_SESSION['forgot_code_expires'], $_SESSION['forgot_code_attempts']);
-            $this->error('验证码尝试次数过多，请重新获取');
+            $this->respondSubmit(false, '验证码尝试次数过多，请重新获取');
             return;
         }
 
         if (empty($sessionCode) || !hash_equals($sessionCode, $code)) {
             $_SESSION['forgot_code_attempts'] = $attempts + 1;
-            $this->error('验证码错误');
+            $this->respondSubmit(false, '验证码错误');
             return;
         }
 
         if (time() > $expires) {
             unset($_SESSION['forgot_code'], $_SESSION['forgot_email'], $_SESSION['forgot_user_id'], $_SESSION['forgot_code_expires']);
-            $this->error('验证码已过期，请重新获取');
+            $this->respondSubmit(false, '验证码已过期，请重新获取');
             return;
         }
 
         if (!$userId) {
-            $this->error('操作无效，请重新获取验证码');
+            $this->respondSubmit(false, '操作无效，请重新获取验证码');
             return;
         }
 
         // 更新密码
-        $hashed = password_hash($password, PASSWORD_BCRYPT);
-        \Core\Database::useMaster();
-        try {
-            \Core\Database::execute("UPDATE users SET password = ?, updated_at = ? WHERE id = ?", [$hashed, time(), $userId]);
-        } finally {
-            \Core\Database::restoreReadWrite();
-        }
+        UserModel::updatePassword($userId, password_hash($password, PASSWORD_BCRYPT));
 
         // 清除 Remember Me token，防止旧 cookie 继续登录
         \Core\RememberToken::clear($userId);
 
-        // 销毁该用户的所有活跃 session，强制其他设备下线
-        \Core\Database::execute("DELETE FROM sessions WHERE user_id = ?", [$userId]);
+        // 说明：这里原本 DELETE FROM sessions 想强制其他设备下线，
+        // 但真实 session 存在文件 / Redis 中，那张表只是旧在线统计的镜像（已随该功能移除），
+        // 所以那条语句并没有真正的下线效果。要真正做到需基于会话版本号校验。
 
         // 清理 session
         unset($_SESSION['forgot_code'], $_SESSION['forgot_email'], $_SESSION['forgot_user_id'], $_SESSION['forgot_code_time'], $_SESSION['forgot_code_expires']);
@@ -393,7 +470,7 @@ class User extends Base
             'ip' => $_SERVER['REMOTE_ADDR'] ?? '',
         ]);
 
-        $this->success('密码重置成功，请重新登录');
+        $this->respondSubmit(true, '密码重置成功，请重新登录', '/login');
     }
 
     /**
@@ -418,11 +495,11 @@ class User extends Base
         // 关注数据
         $followingCount = 0; $followerCount = 0; $isFollowing = false; $isBlocked = false;
         try {
-            $followingCount = \App\Services\FollowSvc::getFollowingCount($userId);
-            $followerCount = \App\Services\FollowSvc::getFollowerCount($userId);
+            $followingCount = \App\Models\Follow::getFollowingCount($userId);
+            $followerCount = \App\Models\Follow::getFollowerCount($userId);
             if (isset($_SESSION['user_id']) && $_SESSION['user_id'] != $userId) {
-                $isFollowing = \App\Services\FollowSvc::isFollowing($_SESSION['user_id'], $userId);
-                $isBlocked = \App\Services\BlacklistSvc::isBlocked($_SESSION['user_id'], $userId);
+                $isFollowing = \App\Models\Follow::isFollowing($_SESSION['user_id'], $userId);
+                $isBlocked = \App\Models\Blacklist::isBlocked($_SESSION['user_id'], $userId);
             }
         } catch (\Throwable $e) {
             error_log('[User] follow data: ' . $e->getMessage());
@@ -432,7 +509,7 @@ class User extends Base
         $userMoments = [];
         $momentTotal = 0;
         try {
-            $momentResult = \App\Services\MomentSvc::getList(1, 10, $userId);
+            $momentResult = \App\Models\Moment::getList(1, 10, $userId);
             $userMoments = $momentResult['moments'] ?? [];
             $momentTotal = $momentResult['total'] ?? 0;
         } catch (\Throwable $e) {
@@ -474,7 +551,7 @@ class User extends Base
 
         $threads = $service->getUserThreads($userId, 10);
         $replies = $service->getUserReplies($userId, 10);
-        $favorites = \App\Services\FavoriteSvc::getUserFavorites($userId, 5);
+        $favorites = \App\Models\Favorite::getUserFavorites($userId, 5);
 
         $this->render('user/profile', [
             'user' => $user,
@@ -492,18 +569,26 @@ class User extends Base
         $this->requireLogin();
         $file = $_FILES['avatar'] ?? null;
         if (!$file) {
-            $this->error('请选择头像文件');
+            $this->respondSubmit(false, '请选择头像文件');
             return;
         }
 
         try {
             $service = new \App\Services\UserSvc();
             $avatarUrl = $service->uploadAvatar($this->getCurrentUserId(), $file);
-            $this->success('头像上传成功', ['avatar' => $avatarUrl]);
         } catch (\RuntimeException $e) {
-            $this->error($e->getMessage());
+            $this->respondSubmit(false, $e->getMessage());
             return;
         }
+
+        if (!$this->isHtmx()) {
+            $this->success('头像上传成功', ['avatar' => $avatarUrl]);
+            return;
+        }
+
+        // htmx：回一个新的 <img id="avatarPreview">，前端换掉旧预览图即可，不用写 JS
+        $this->frontFlash('头像上传成功');
+        $this->render('user/_avatar_preview', ['avatarUrl' => $avatarUrl]);
     }
 
     /**
@@ -512,17 +597,18 @@ class User extends Base
     public function updateProfile(): void
     {
         $this->requireLogin();
-        $email = trim($_POST['email'] ?? '');
-        $signature = trim($_POST['signature'] ?? '');
-        $nickname = trim($_POST['nickname'] ?? '') ?: null;
+        $input = $this->input();
+        $email = trim((string)($input['email'] ?? ''));
+        $signature = trim((string)($input['signature'] ?? ''));
+        $nickname = trim((string)($input['nickname'] ?? '')) ?: null;
 
         try {
             $service = new \App\Services\UserSvc();
             $service->updateProfile($this->getCurrentUserId(), $email, $signature, $nickname);
             $_SESSION['nickname'] = $nickname;
-            $this->success('资料更新成功');
+            $this->respondSubmit(true, '资料更新成功');
         } catch (\RuntimeException $e) {
-            $this->error($e->getMessage());
+            $this->respondSubmit(false, $e->getMessage());
             return;
         }
     }
@@ -533,38 +619,89 @@ class User extends Base
     public function changePassword(): void
     {
         $this->requireLogin();
-        $oldPassword = $_POST['old_password'] ?? '';
-        $newPassword = $_POST['new_password'] ?? '';
-        $confirmPassword = $_POST['confirm_password'] ?? '';
+        $input = $this->input();
+        $oldPassword = (string)($input['old_password'] ?? '');
+        $newPassword = (string)($input['new_password'] ?? '');
+        $confirmPassword = (string)($input['confirm_password'] ?? '');
 
         try {
             $service = new \App\Services\UserSvc();
             $service->changePassword($this->getCurrentUserId(), $oldPassword, $newPassword, $confirmPassword);
-            $this->success('密码修改成功');
+            $this->respondSubmit(true, '密码修改成功');
         } catch (\RuntimeException $e) {
-            $this->error($e->getMessage());
+            $this->respondSubmit(false, $e->getMessage());
             return;
         }
     }
 
     /**
      * 关注/取消关注
+     *
+     * 校验与通知这类跨聚合的编排留在控制器：
+     * Follow 模型只负责 user_follows 自身的关系读写。
      */
     public function follow(): void
     {
         $this->requireLogin();
-        $targetUserId = (int)($_POST['user_id'] ?? 0);
-        if ($targetUserId === $this->getCurrentUserId()) {
-            $this->error('不能关注自己');
+
+        $currentUserId = $this->getCurrentUserId();
+        $targetUserId = (int)($this->input()['user_id'] ?? 0);
+
+        if ($targetUserId === $currentUserId) {
+            $this->respondFragment(false, '不能关注自己', static function (): void {});
             return;
         }
-        try {
-            $result = \App\Services\FollowSvc::toggle($this->getCurrentUserId(), $targetUserId);
-            $this->json(['success' => true, 'followed' => $result['followed']]);
-        } catch (\RuntimeException $e) {
-            $this->error($e->getMessage());
+        if (\App\Models\Blacklist::isEitherBlocked($currentUserId, $targetUserId)) {
+            $this->respondFragment(false, '无法关注该用户', static function (): void {});
             return;
         }
+        if (!\App\Models\User::exists($targetUserId)) {
+            $this->respondFragment(false, '用户不存在', static function (): void {});
+            return;
+        }
+
+        $followed = \App\Models\Follow::toggleRelation($currentUserId, $targetUserId);
+
+        // 通知放在关系表落库之后，避免事务里做额外查询
+        if ($followed) {
+            $me = \App\Models\User::findById($currentUserId);
+            \App\Models\Notification::notify(
+                $targetUserId,
+                $currentUserId,
+                'follow',
+                ($me['username'] ?? '用户') . ' 关注了你',
+                '',
+                'user',
+                $currentUserId
+            );
+        }
+
+        if (!$this->isHtmx()) {
+            $this->json(['success' => true, 'followed' => $followed]);
+            return;
+        }
+
+        $this->respondFragment(true, $followed ? '已关注' : '已取消关注', function () use ($targetUserId): void {
+            $this->renderProfileActions($targetUserId);
+        });
+    }
+
+    /**
+     * 渲染用户主页的关注/拉黑按钮片段
+     *
+     * 拉黑会连带隐藏关注与私信入口，所以两个按钮放在同一个片段里一起重渲染，
+     * 前端不需要自己判断该隐藏谁。
+     */
+    private function renderProfileActions(int $targetUserId): void
+    {
+        $viewerId = $this->getCurrentUserId();
+        $notSelf = $viewerId > 0 && $viewerId !== $targetUserId;
+
+        $this->render('user/_profile_actions', [
+            'targetId'    => $targetUserId,
+            'isFollowing' => $notSelf && \App\Models\Follow::isFollowing($viewerId, $targetUserId),
+            'isBlocked'   => $notSelf && \App\Models\Blacklist::isBlocked($viewerId, $targetUserId),
+        ]);
     }
 
     /**
@@ -578,8 +715,8 @@ class User extends Base
         $perPage = 20;
         $offset = ($page - 1) * $perPage;
 
-        $favorites = \App\Services\FavoriteSvc::getUserFavorites($userId, $perPage, $offset);
-        $total = \App\Services\FavoriteSvc::countUserFavorites($userId);
+        $favorites = \App\Models\Favorite::getUserFavorites($userId, $perPage, $offset);
+        $total = \App\Models\Favorite::countUserFavorites($userId);
         $totalPages = max(1, (int)ceil($total / $perPage));
 
         $this->render('user/favorites', [
@@ -600,7 +737,7 @@ class User extends Base
         $user = $service->getProfile($userId);
         if (!$user) { $this->error('用户不存在', 404); return; }
 
-        $followers = \App\Services\FollowSvc::getFollowerList($userId, 50);
+        $followers = \App\Models\Follow::getFollowerList($userId, 50);
         $this->render('user/follow_list', [
             'user' => \App\Services\UserSvc::safeInfo($user),
             'list' => $followers,
@@ -618,7 +755,7 @@ class User extends Base
         $user = $service->getProfile($userId);
         if (!$user) { $this->error('用户不存在', 404); return; }
 
-        $following = \App\Services\FollowSvc::getFollowingList($userId, 50);
+        $following = \App\Models\Follow::getFollowingList($userId, 50);
         $this->render('user/follow_list', [
             'user' => \App\Services\UserSvc::safeInfo($user),
             'list' => $following,
@@ -635,8 +772,7 @@ class User extends Base
         $userId = $this->getCurrentUserId();
         $page = max(1, (int)($_GET['page'] ?? 1));
 
-        $creditSvc = new \App\Services\CreditSvc();
-        $result = $creditSvc->getUserCreditLogs($userId, $page, 20);
+        $result = \App\Models\CreditLog::getUserCreditLogs($userId, $page, 20);
 
         // 预加载 post 类型记录的 thread_id，避免视图中 N+1 查询
         $logs = $result['logs'];
@@ -647,12 +783,10 @@ class User extends Base
             }
         }
         if (!empty($postIds)) {
-            $placeholders = implode(',', array_fill(0, count($postIds), '?'));
-            $postRows = Database::fetchAll("SELECT id, thread_id FROM posts WHERE id IN ({$placeholders})", $postIds);
-            $postThreadMap = array_column($postRows, 'thread_id', 'id');
+            $postThreadMap = Post::threadIdMap($postIds);
             foreach ($logs as &$log) {
                 if (($log['related_type'] ?? '') === 'post') {
-                    $log['_thread_id'] = $postThreadMap[$log['related_id']] ?? null;
+                    $log['_thread_id'] = $postThreadMap[(int)$log['related_id']] ?? null;
                 }
             }
             unset($log);
@@ -671,8 +805,7 @@ class User extends Base
      */
     public function creditRanking(): void
     {
-        $creditSvc = new \App\Services\CreditSvc();
-        $ranking = $creditSvc->getCreditRanking(50);
+        $ranking = \App\Models\User::getCreditRanking(50);
 
         $this->render('user/credit_ranking', [
             'ranking' => $ranking,
@@ -703,14 +836,22 @@ class User extends Base
     public function blacklist(): void
     {
         $this->requireLogin();
-        $targetUserId = (int)($_POST['user_id'] ?? 0);
+        $targetUserId = (int)($this->input()['user_id'] ?? 0);
         try {
-            $result = \App\Services\BlacklistSvc::toggle($this->getCurrentUserId(), $targetUserId);
-            $this->json(['success' => true, 'blocked' => $result['blocked']]);
+            $result = \App\Models\Blacklist::toggle($this->getCurrentUserId(), $targetUserId);
         } catch (\RuntimeException $e) {
-            $this->error($e->getMessage());
+            $this->respondFragment(false, $e->getMessage(), static function (): void {});
             return;
         }
+
+        if (!$this->isHtmx()) {
+            $this->json(['success' => true, 'blocked' => $result['blocked']]);
+            return;
+        }
+
+        $this->respondFragment(true, $result['blocked'] ? '已拉黑' : '已解除拉黑', function () use ($targetUserId): void {
+            $this->renderProfileActions($targetUserId);
+        });
     }
 
     /**
@@ -724,8 +865,8 @@ class User extends Base
         $perPage = 20;
         $offset = ($page - 1) * $perPage;
 
-        $list = \App\Services\BlacklistSvc::getList($userId, $perPage, $offset);
-        $total = \App\Services\BlacklistSvc::getCount($userId);
+        $list = \App\Models\Blacklist::getList($userId, $perPage, $offset);
+        $total = \App\Models\Blacklist::getCount($userId);
         $totalPages = max(1, (int)ceil($total / $perPage));
 
         $this->render('user/blacklist', [

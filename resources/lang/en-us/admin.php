@@ -15,7 +15,6 @@ return [
     'user_list' => 'User List',
     'user_groups' => 'User Groups',
     'user_settings' => 'User Settings',
-    'online_users' => 'Online Users',
     'site_settings' => 'Site Settings',
     'cache_manage' => 'Cache',
     'cluster_manage' => 'Cluster',

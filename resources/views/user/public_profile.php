@@ -42,26 +42,14 @@ include APP_PATH . 'resources/views/layout/header.php';
                 <div class="profile-stat-item"><strong><?= date('Y-m-d', $user['created_at']) ?></strong><span>注册</span></div>
             </div>
             <?php if (isset($_SESSION['user_id']) && $_SESSION['user_id'] != $user['id']): ?>
-            <div style="display:flex;align-items:center;gap:8px;margin-top:12px;">
-                <?php if (!$_isBlocked): ?>
-                <span x-data="{ followed: <?= $_isFollowing ? 'true' : 'false' ?>, loading: false }" style="display:inline-flex;">
-                    <button class="btn btn-sm" :class="followed ? 'btn-ghost' : 'btn-primary'" :disabled="loading" @click="
-                        loading = true;
-                        App.post('/user/follow', {user_id:'<?= (int)$user['id'] ?>'}, {silent:true})
-                        .then(d => { if (d.success) followed = d.followed; }).finally(() => loading = false);
-                    " x-text="followed ? '已关注' : '+ 关注'"></button>
-                </span>
-                <a href="/messages/<?= (int)$user['id'] ?>" class="btn btn-ghost btn-sm">发私信</a>
-                <?php endif; ?>
-                <span x-data="{ blocked: <?= $_isBlocked ? 'true' : 'false' ?>, loading: false }" style="display:inline-flex;">
-                    <button class="btn btn-sm" :class="blocked ? 'btn-danger' : 'btn-ghost'" :disabled="loading" @click="
-                        if (!blocked && !confirm('确定拉黑该用户？拉黑后将自动取消互相关注，对方无法给你发私信、回复你的帖子。')) return;
-                        loading = true;
-                        App.post('/user/blacklist', {user_id:'<?= (int)$user['id'] ?>'}, {silent:true})
-                        .then(d => { if (d.success) { blocked = d.blocked; if (d.blocked) location.reload(); } }).finally(() => loading = false);
-                    " x-text="blocked ? '已拉黑 (点击解除)' : '拉黑'"></button>
-                </span>
-            </div>
+            <?php
+            // 关注 / 拉黑按钮：两个动作都是 htmx POST，成功后服务端重渲染这个片段整体替换，
+            // 所以「拉黑后隐藏关注和私信」的联动由服务端一次算清（原来靠 location.reload()）。
+            $targetId = (int)$user['id'];
+            $isFollowing = $_isFollowing;
+            $isBlocked = $_isBlocked;
+            include APP_PATH . 'resources/views/user/_profile_actions.php';
+            ?>
             <?php endif; ?>
         </div>
     </div>
@@ -86,16 +74,16 @@ include APP_PATH . 'resources/views/layout/header.php';
     <?php endif; ?>
 </div>
 
-<!-- 标签页 -->
-<div class="card" x-data="{ tab: 'threads' }">
+<!-- 标签页（切换由 app.js 的 [data-tabs] 接管，面板内容仍是服务端一次渲染） -->
+<div class="card" data-tabs="threads">
     <div class="tabs">
-        <button class="tab-item" :class="{ active: tab === 'threads' }" @click="tab = 'threads'">帖子 (<?= number_format($totalThreads ?? count($threads)) ?>)</button>
-        <button class="tab-item" :class="{ active: tab === 'replies' }" @click="tab = 'replies'">评论 (<?= number_format($totalReplies ?? count($replies ?? [])) ?>)</button>
-        <button class="tab-item" :class="{ active: tab === 'moments' }" @click="tab = 'moments'">动态 (<?= number_format($momentTotal ?? count($_userMoments)) ?>)</button>
+        <button type="button" class="tab-item" data-tab="threads">帖子 (<?= number_format($totalThreads ?? count($threads)) ?>)</button>
+        <button type="button" class="tab-item" data-tab="replies">评论 (<?= number_format($totalReplies ?? count($replies ?? [])) ?>)</button>
+        <button type="button" class="tab-item" data-tab="moments">动态 (<?= number_format($momentTotal ?? count($_userMoments)) ?>)</button>
     </div>
 
     <!-- 帖子 -->
-    <div class="tab-panel" :class="{ active: tab === 'threads' }">
+    <div class="tab-panel" data-tab-panel="threads">
         <?php if (empty($threads)): ?>
             <div class="empty-state"><p>暂无帖子</p></div>
         <?php else: ?>
@@ -124,7 +112,7 @@ include APP_PATH . 'resources/views/layout/header.php';
     </div>
 
     <!-- 回复 -->
-    <div class="tab-panel" :class="{ active: tab === 'replies' }">
+    <div class="tab-panel" data-tab-panel="replies">
         <?php if (empty($replies)): ?>
             <div class="empty-state"><p>暂无评论</p></div>
         <?php else: ?>
@@ -141,7 +129,7 @@ include APP_PATH . 'resources/views/layout/header.php';
     </div>
 
     <!-- 动态 -->
-    <div class="tab-panel" :class="{ active: tab === 'moments' }">
+    <div class="tab-panel" data-tab-panel="moments">
         <?php if (empty($_userMoments)): ?>
             <div class="empty-state"><p>暂无动态</p></div>
         <?php else: ?>

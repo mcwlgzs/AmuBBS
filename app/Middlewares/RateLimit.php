@@ -38,6 +38,18 @@ class RateLimit implements Middleware
 
         if ($result === -1) {
             http_response_code(429);
+
+            // htmx 请求：带上 frontFlash，前台就能弹出真正的原因；
+            // 否则前端只看到 429，只能给一句无意义的「请求失败」。
+            if (!empty($_SERVER['HTTP_HX_REQUEST'])) {
+                header('HX-Trigger: ' . json_encode([
+                    'frontFlash' => ['type' => 'danger', 'message' => '请求过于频繁，请稍后再试'],
+                ], JSON_UNESCAPED_SLASHES));
+                header('HX-Reswap: none');
+                header('Content-Type: text/html; charset=utf-8');
+                return;
+            }
+
             header('Content-Type: application/json; charset=utf-8');
             echo json_encode([
                 'success' => false,

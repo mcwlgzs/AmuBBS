@@ -18,9 +18,13 @@
 }
 .announcement-item.ann-urgent .announcement-icon { background: rgba(239,68,68,.06); color: var(--danger); }
 .announcement-item.ann-important .announcement-icon { background: rgba(245,158,11,.06); color: var(--warning); }
+/* 公告正文：公告只有「内容」这一个文本来源（后台已不收集标题）。
+   换行按原样渲染（PHP 侧只做 htmlspecialchars，不插 <br>）；
+   写太长时在条目内滚动，不让首页被撑爆 */
 .announcement-item .announcement-text {
     flex: 1; min-width: 0; font-size: 13px; color: var(--text); font-weight: 500;
-    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    white-space: pre-wrap; word-break: break-word; overflow-wrap: anywhere;
+    max-height: 8em; overflow-y: auto;
 }
 .announcement-item .announcement-text a { color: inherit; }
 .announcement-item .announcement-text a:hover { color: var(--primary); }
@@ -38,6 +42,31 @@
     border: none; cursor: pointer; padding: 0;
 }
 .announcement-toggle:hover { text-decoration: underline; }
+/* 「查看全部公告」用原生 <details>：展开/收起和文案切换都不需要 JS */
+.announcement-more > summary { list-style: none; }
+.announcement-more > summary::-webkit-details-marker { display: none; }
+.announcement-more .ann-more-open { display: none; }
+.announcement-more[open] .ann-more-closed { display: none; }
+.announcement-more[open] .ann-more-open { display: inline; }
+/* 展开后，里面的公告条目要和外面那几条一样的间距 */
+.announcement-more[open] { display: flex; flex-direction: column; gap: 6px; }
+
+/* ========== 动态：已上传图片的缩略图（服务端渲染，带隐藏字段） ========== */
+.moment-thumbs { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
+.moment-thumbs:empty { display: none; }
+.upload-thumb { position: relative; width: 80px; height: 80px; }
+.upload-thumb img { width: 100%; height: 100%; object-fit: cover; border-radius: var(--radius); }
+.upload-thumb-remove {
+    position: absolute; top: -6px; right: -6px; width: 20px; height: 20px;
+    border-radius: 50%; background: var(--danger); color: #fff; border: none;
+    font-size: 12px; line-height: 1; cursor: pointer;
+    display: flex; align-items: center; justify-content: center;
+}
+/* 评论容器即使为空也在 DOM 里（新评论用 beforeend 追加），空的时候别留下边框。
+   注意用的是 is-empty 类而不是 :empty：模板里 include 会带出换行，:empty 永远不成立；
+   htmx 追加后由 app.js 的 htmx:afterSwap 钩子摘掉 is-empty。 */
+.moment-comments.is-empty,
+.moment-replies.is-empty { display: none; }
 
 /* 板块导航条 */
 .forum-nav-bar {
@@ -90,8 +119,6 @@
 .card-list-footer {
     padding: 12px 16px; border-top: 1px solid var(--border-light); text-align: center;
 }
-.view-all-link { font-size: 13px; color: var(--text-muted); }
-.view-all-link:hover { color: var(--primary); }
 
 /* 帖子列表项 */
 .thread-item {
@@ -127,13 +154,6 @@
     flex-shrink: 0; font-size: 12px; color: var(--text-muted);
 }
 .thread-item-stats span { display: flex; align-items: center; gap: 4px; }
-
-/* 侧栏发帖按钮 */
-.sidebar-post-btn {
-    width: 100%; text-align: center; margin-bottom: 12px;
-    padding: 10px; font-size: 14px; font-weight: 600;
-    border-radius: var(--radius);
-}
 
 /* 站点信息卡片 */
 .card-site-info {
@@ -177,9 +197,10 @@
 .stat-users { background: rgba(245,158,11,.1); }
 .stat-users .site-info-stat-value { color: #f59e0b; }
 .stat-users .site-info-stat-label { color: #f59e0b; }
-.stat-online { background: rgba(239,68,68,.1); }
-.stat-online .site-info-stat-value { color: #ef4444; }
-.stat-online .site-info-stat-label { color: #ef4444; }
+/* 今日新帖：紫色，与蓝(主题)/绿(回帖)/琥珀(会员) 区分开 */
+.stat-today { background: rgba(139,92,246,.1); }
+.stat-today .site-info-stat-value { color: #8b5cf6; }
+.stat-today .site-info-stat-label { color: #8b5cf6; }
 
 /* 签到卡片 */
 .checkin-card { padding: 14px 16px !important; }
@@ -310,7 +331,7 @@
     .announcement-item { padding: 8px 10px; gap: 8px; }
     .announcement-item .announcement-icon { width: 22px; height: 22px; }
     .announcement-item .announcement-icon svg { width: 12px; height: 12px; }
-    .announcement-item .announcement-text { font-size: 12px; }
+    .announcement-item .announcement-text { font-size: 12px; max-height: 6.4em; }
     .announcement-close { min-width: 32px; min-height: 32px; }
     .forum-nav-bar { display: none; }
     /* 帖子列表：边到边卡片 */
@@ -341,7 +362,7 @@
     .thread-item-stats span { font-size: 11px; font-weight: 500; color: var(--text-muted); gap: 2px; }
     .thread-item-stats span svg { width: 12px; height: 12px; opacity: .3; }
     .card-list-footer { padding: 10px 14px; }
-    .view-all-link { font-size: 12px; }
+
     .card-site-info { margin-bottom: 0; }
     .site-info-body { padding: 12px; }
     .site-info-name { font-size: 15px; }
@@ -349,7 +370,7 @@
     .site-info-stats { padding: 8px 6px; }
     .site-info-stat-value { font-size: 14px; }
     .site-info-stat-label { font-size: 10px; }
-    .sidebar-post-btn { padding: 8px; font-size: 13px; margin-bottom: 10px; }
+
     .hot-item { padding: 5px 10px; }
     .hot-title { font-size: 12px; }
     .forum-card { padding: 6px 10px; gap: 8px; }
@@ -406,7 +427,7 @@ html.dark .card-site-info { background: var(--bg-card); border-color: var(--bord
 html.dark .stat-threads { background: rgba(59,130,246,.15); }
 html.dark .stat-posts { background: rgba(16,185,129,.15); }
 html.dark .stat-users { background: rgba(245,158,11,.15); }
-html.dark .stat-online { background: rgba(239,68,68,.15); }
+html.dark .stat-today { background: rgba(139,92,246,.15); }
 html.dark .site-info-stat:hover { box-shadow: 0 4px 12px rgba(0,0,0,.3); }
 html.dark .hot-item:hover { background: rgba(255,255,255,.03); }
 html.dark .thread-item:hover { background: rgba(255,255,255,.03); }
@@ -453,11 +474,50 @@ html.dark .thread-item:hover { background: rgba(255,255,255,.03); }
     background: var(--gray-50); border-radius: var(--radius);
 }
 .moment-comment { font-size: 13px; line-height: 1.6; padding: 3px 0; }
+.moment-comment + .moment-comment { margin-top: 6px; }
+.moment-comment-head { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; }
 .moment-comment-author { font-weight: 600; color: var(--primary); text-decoration: none; }
 .moment-comment-author:hover { text-decoration: underline; }
-.moment-comment-text { color: var(--text); }
+.moment-comment-time { color: var(--text-muted); font-size: 12px; }
+.moment-comment-replyto {
+    color: var(--text-muted); font-size: 12px;
+    background: var(--gray-100); border-radius: var(--radius-full); padding: 1px 8px;
+}
+.moment-comment-replyto a { color: var(--primary); text-decoration: none; }
+.moment-comment-replyto a:hover { text-decoration: underline; }
+.moment-comment-text { color: var(--text); margin-top: 2px; }
+/* 一层嵌套：子回复成组缩进在所属顶层评论下面（对应 GitHub Discussions 的 threaded reply） */
+.moment-replies {
+    margin-top: 4px; padding-left: 12px;
+    border-left: 2px solid var(--border);
+}
+.moment-comment-child { padding: 3px 0; }
+.moment-comment-actions { display: flex; align-items: center; gap: 10px; margin-top: 2px; }
+.moment-comment-reply {
+    background: none; border: none; padding: 0; cursor: pointer;
+    font-size: 12px; color: var(--text-muted); transition: color .15s;
+}
+.moment-comment-reply:hover { color: var(--primary); text-decoration: underline; }
+.moment-comments-more { margin-top: 6px; }
+.moment-more-btn {
+    background: none; border: none; padding: 0; cursor: pointer;
+    font-size: 12px; font-weight: 600; color: var(--primary);
+}
+.moment-more-btn:hover { text-decoration: underline; }
+.moment-more-btn:disabled { color: var(--text-muted); cursor: default; text-decoration: none; }
 .moment-comment-form { margin-top: 10px; }
 .moment-comment-form .form-input { font-size: 13px; padding: 8px 12px; }
+/* 线程内的回复框：贴在所属顶层评论下面，与回复行同样缩进 */
+.moment-reply-form {
+    margin-top: 6px; padding-left: 12px;
+    border-left: 2px solid var(--border);
+}
+.moment-reply-indicator {
+    display: flex; align-items: center; gap: 6px;
+    font-size: 12px; color: var(--text-muted); margin-bottom: 4px;
+}
+.moment-reply-indicator a { color: var(--primary); text-decoration: none; }
+.moment-reply-indicator a:hover { text-decoration: underline; }
 
 /* 板块分类页 */
 .forums-page { max-width: 800px; }

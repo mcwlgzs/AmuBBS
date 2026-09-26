@@ -5,7 +5,12 @@
 
 namespace App\Services;
 
-use Core\Database;
+use App\Models\Forum;
+use App\Models\Moment;
+use App\Models\Notification;
+use App\Models\Setting;
+use App\Models\Thread;
+use App\Models\User;
 use Core\Cache;
 
 class CronSvc
@@ -18,20 +23,22 @@ class CronSvc
         $results = [];
 
         // 使用带 owner token 的原子锁防止并发执行
+        // TTL 要留够余量：10 个任务串行跑完可能超过 5 分钟，锁提前过期会导致重复执行
         $lockKey = 'cron:lock';
         $lockToken = bin2hex(random_bytes(8));
-        if (!Cache::add($lockKey, $lockToken, 300)) {
+        if (!Cache::add($lockKey, $lockToken, 1800)) {
             return ['message' => '任务正在执行中'];
         }
 
         $tasks = [
-            'clean_sessions' => fn() => $this->cleanExpiredSessions(),
             'clean_attachments' => fn() => $this->cleanOrphanAttachments(),
             'update_forum_stats' => fn() => $this->updateForumStats(),
             'clean_ip_blacklist' => fn() => $this->cleanExpiredIpBlacklist(),
             'reset_today_stats' => fn() => $this->resetTodayStats(),
             'flush_views' => fn() => $this->flushPendingViews(),
             'warm_cache' => fn() => $this->warmCache(),
+            'gc_cache' => fn() => $this->gcCache(),
+            'rotate_logs' => fn() => $this->rotateLogs(),
             'clean_ip_access' => fn() => IpAccessSvc::cleanOldLogs(7),
             'clean_old_logs' => fn() => LogService::cleanOldLogs(90),
             'process_queue' => fn() => $this->processQueues(),
@@ -59,27 +66,6 @@ class CronSvc
     }
 
     /**
-     * 清理过期 session
-     * 登录用户（user_id > 0）：超过7天清理
-     * 游客（user_id = 0）：超过1小时清理
-     */
-    private function cleanExpiredSessions(): int
-    {
-        try {
-            $userThreshold = time() - 604800;  // 7天
-            $guestThreshold = time() - 3600;   // 1小时
-            $count = Database::execute(
-                "DELETE FROM sessions WHERE (user_id > 0 AND last_activity < ?) OR (user_id = 0 AND last_activity < ?)",
-                [$userThreshold, $guestThreshold]
-            );
-            return $count;
-        } catch (\Throwable $e) {
-            error_log('[CronSvc] cleanExpiredSessions failed: ' . $e->getMessage());
-            return 0;
-        }
-    }
-
-    /**
      * 清理未关联的临时附件
      */
     private function cleanOrphanAttachments(): int
@@ -88,60 +74,69 @@ class CronSvc
     }
 
     /**
+     * 回收过期缓存文件
+     *
+     * 文件驱动的 TTL 是惰性的：只有「再次被读到」才会 unlink，再也无人读的 key
+     * 会永久留在磁盘上；原来的 maybeGc 只是 1/200 抽奖，且只在请求里触发。
+     * 这里由 cron 兜底全量回收（Cache::gc() 之前全项目零调用者）。
+     */
+    private function gcCache(): int
+    {
+        return Cache::gc();
+    }
+
+    /**
+     * 轮转 / 清理文件日志
+     *
+     * 日志是「一天一个文件、FILE_APPEND」且**没有任何删除逻辑**，
+     * storage/logs 会单调增长。这里按天保留 $keepDays 天，
+     * 单个文件超过 $maxBytes 时归档一份（只留一代），当前文件重新开始。
+     *
+     * @return array{deleted:int,rotated:int}
+     */
+    private function rotateLogs(): array
+    {
+        $dir = APP_PATH . 'storage/logs/';
+        $keepDays = 30;
+        $maxBytes = 10 * 1024 * 1024; // 10 MB
+        $now = time();
+        $deleted = 0;
+        $rotated = 0;
+
+        foreach (glob($dir . '*.log') ?: [] as $file) {
+            if (!is_file($file)) {
+                continue;
+            }
+
+            // 文件名形如 2026-09-25.log：按日期删过期文件
+            if (preg_match('/^(\d{4}-\d{2}-\d{2})\.log$/', basename($file), $m)) {
+                $ts = strtotime($m[1] . ' 00:00:00');
+                if ($ts !== false && $ts < $now - $keepDays * 86400) {
+                    if (@unlink($file)) {
+                        $deleted++;
+                    }
+                    continue;
+                }
+            }
+
+            // 单文件过大：归档一份（覆盖上一代归档），避免任何单个文件无限增长
+            if (filesize($file) > $maxBytes) {
+                if (@rename($file, $file . '.1')) {
+                    $rotated++;
+                }
+            }
+        }
+
+        return ['deleted' => $deleted, 'rotated' => $rotated];
+    }
+
+    /**
      * 更新板块统计（重新计算 thread_count 和 post_count）
      */
     private function updateForumStats(): int
     {
-        // 一次 GROUP BY 统计所有板块的帖子数和回复数，替代逐板块 N+1 查询
-        $threadStats = Database::fetchAll(
-            "SELECT forum_id, COUNT(*) as c FROM threads WHERE deleted_at IS NULL GROUP BY forum_id"
-        );
-        $threadMap = [];
-        foreach ($threadStats as $row) {
-            $threadMap[(int)$row['forum_id']] = (int)$row['c'];
-        }
-
-        $postStats = Database::fetchAll(
-            "SELECT t.forum_id, COUNT(*) as c FROM posts p INNER JOIN threads t ON p.thread_id = t.id WHERE t.deleted_at IS NULL AND p.deleted_at IS NULL GROUP BY t.forum_id"
-        );
-        $postMap = [];
-        foreach ($postStats as $row) {
-            $postMap[(int)$row['forum_id']] = (int)$row['c'];
-        }
-
-        $forums = Database::fetchAll("SELECT id FROM forums WHERE deleted_at IS NULL");
-        if (empty($forums)) {
-            return 0;
-        }
-
-        // 批量 CASE WHEN 一次性更新，避免逐板块 N+1
-        $ids = [];
-        $threadCases = [];
-        $postCases = [];
-        $threadParams = [];
-        $postParams = [];
-        foreach ($forums as $forum) {
-            $fid = (int)$forum['id'];
-            $ids[] = $fid;
-            $threadCases[] = "WHEN id = ? THEN ?";
-            $threadParams[] = $fid;
-            $threadParams[] = $threadMap[$fid] ?? 0;
-            $postCases[] = "WHEN id = ? THEN ?";
-            $postParams[] = $fid;
-            $postParams[] = $postMap[$fid] ?? 0;
-        }
-        $threadCaseStr = implode(' ', $threadCases);
-        $postCaseStr = implode(' ', $postCases);
-        $placeholders = implode(',', array_fill(0, count($ids), '?'));
-        // 参数顺序必须与 SQL 一致：先 thread CASE，再 post CASE，最后 WHERE IN
-        $params = array_merge($threadParams, $postParams, $ids);
-        Database::execute(
-            "UPDATE forums SET thread_count = CASE {$threadCaseStr} ELSE thread_count END, post_count = CASE {$postCaseStr} ELSE post_count END WHERE id IN ({$placeholders})",
-            $params
-        );
-
-        Cache::delete('forums:list');
-        return count($forums);
+        // 计数与批量写回都在模型里（Thread/Post 各一次 GROUP BY + Forum 一条 CASE WHEN）
+        return Forum::rebuildStats();
     }
 
     /**
@@ -150,11 +145,7 @@ class CronSvc
     private function cleanExpiredIpBlacklist(): int
     {
         try {
-            $now = time();
-            $count = Database::execute(
-                "DELETE FROM ip_blacklist WHERE expire_at > 0 AND expire_at < ?",
-                [$now]
-            );
+            $count = \App\Models\IpBlacklist::pruneExpired();
             if ($count > 0) {
                 IpBlacklistService::clearCache();
             }
@@ -178,7 +169,7 @@ class CronSvc
         }
 
         // 清零所有板块的今日统计
-        Database::execute("UPDATE forums SET today_threads = 0, today_posts = 0 WHERE deleted_at IS NULL");
+        Forum::resetTodayCounts();
 
         Cache::delete('runtime:today');
         Cache::delete('forums:list');
@@ -194,44 +185,36 @@ class CronSvc
     {
         $count = 0;
         try {
-            // 获取所有帖子 ID（只查最近有活动的）
-            $threads = Database::fetchAll(
-                "SELECT id FROM threads WHERE deleted_at IS NULL AND updated_at > ? ORDER BY id DESC LIMIT 1000",
-                [time() - 86400]
-            );
+            // 1) 最近有活动的帖子
+            $threadIds = Thread::idsUpdatedSince(time() - 86400, 1000);
+
+            // 2) 再加上「请求期间登记过的待写帖子」——老帖（超过 24h 没有回帖）
+            //    不会出现在 idsUpdatedSince() 里，只靠上面的查询会整批漏掉。
+            $dirty = Cache::getAndDelete(ThreadSvc::PENDING_VIEW_IDS_KEY);
+            if (is_array($dirty) && $dirty) {
+                $threadIds = array_values(array_unique(array_merge(
+                    $threadIds,
+                    array_map('intval', $dirty)
+                )));
+            }
 
             // 批量收集待写入的浏览量
             $batch = [];
-            foreach ($threads as $t) {
-                $tid = (int)$t['id'];
+            foreach ($threadIds as $tid) {
                 $key = "views:pending:{$tid}";
-                // 原子读取并删除，避免 get/delete 之间新增的浏览量丢失
-                $pending = (int)Cache::eval(
-                    "local v = redis.call('GET', KEYS[1]); if v then redis.call('DEL', KEYS[1]) end; return v",
-                    [$key]
-                );
-                if ($pending > 0) {
-                    $batch[$tid] = $pending;
+                // 驱动无关的原子「读取并删除」，避免 get/delete 之间新增的浏览量丢失
+                $pending = (int)Cache::getAndDelete($key);
+                // 请求路径已经按 10 的整数倍落过库，这里只补零头，
+                // 否则会把同一批浏览量写两遍
+                $remainder = $pending % 10;
+                if ($remainder > 0) {
+                    $batch[$tid] = $remainder;
                 }
             }
 
             // 批量 CASE WHEN 一次性写入数据库
             if (!empty($batch)) {
-                $ids = array_keys($batch);
-                $cases = [];
-                $params = [];
-                foreach ($batch as $tid => $views) {
-                    $cases[] = "WHEN id = ? THEN views + ?";
-                    $params[] = $tid;
-                    $params[] = $views;
-                }
-                $caseStr = implode(' ', $cases);
-                $placeholders = implode(',', array_fill(0, count($ids), '?'));
-                $params = array_merge($params, $ids);
-                Database::execute(
-                    "UPDATE threads SET views = CASE {$caseStr} ELSE views END WHERE id IN ({$placeholders})",
-                    $params
-                );
+                Thread::addViewsBulk($batch);
                 $count = count($batch);
             }
         } catch (\Throwable $e) {
@@ -249,46 +232,30 @@ class CronSvc
 
         try {
             // 1. 首页全局置顶帖
-            $topThreads = Database::fetchAll(
-                "SELECT t.*, u.username, u.nickname, u.avatar, u.nickname_color FROM threads t LEFT JOIN users u ON t.user_id = u.id WHERE t.is_top = 2 AND t.deleted_at IS NULL ORDER BY t.updated_at DESC LIMIT 10"
-            );
-            Cache::set('threads:global_tops_forum', $topThreads, 300);
+            // 预热用的查询必须与读取方（ThreadSvc）完全一致，否则暖出来的形状对不上
+            Cache::set('threads:global_tops_forum', Thread::getGlobalTopThreads(), 300);
             $warmed++;
 
             // 2. 版块列表（通过 ForumSvc 预热，保持带子板块的结构一致）
-            $forumSvc = new \App\Services\ForumSvc();
+            $forumSvc = new ForumSvc();
             $forumSvc->getForumsWithChildren();
             $warmed++;
 
             // 3. 全站设置
-            $settings = Database::fetchAll("SELECT `key`, `value` FROM settings");
-            $map = [];
-            foreach ($settings as $s) { $map[$s['key']] = $s['value']; }
-            Cache::set('settings:all', $map, 3600);
+            Cache::set('settings:all', Setting::all(), 3600);
             $warmed++;
 
             // 4. 侧边栏：活跃用户
-            $weekAgo = time() - 604800;
-            $activeUsers = Database::fetchAll(
-                "SELECT u.id, u.username, u.nickname, u.avatar, u.nickname_color, COUNT(p.id) as post_count FROM posts p INNER JOIN users u ON p.user_id = u.id WHERE p.created_at > ? AND p.deleted_at IS NULL GROUP BY u.id ORDER BY post_count DESC LIMIT 12",
-                [$weekAgo]
-            );
+            $activeUsers = User::mostActiveSince(time() - 604800, 12);
             Cache::set('sidebar:active_users', $activeUsers, 120);
             $warmed++;
 
             // 5. 侧边栏：最新动态
-            $moments = Database::fetchAll(
-                "SELECT m.*, u.username, u.nickname, u.avatar, u.nickname_color FROM moments m LEFT JOIN users u ON m.user_id = u.id WHERE m.deleted_at IS NULL ORDER BY m.created_at DESC LIMIT 5"
-            );
-            Cache::set('sidebar:moments', $moments, 60);
+            Cache::set('sidebar:moments', Moment::latestWithUser(5), 60);
             $warmed++;
 
             // 6. 热门帖子（本周）
-            $weekStart = strtotime('monday this week');
-            $hotThreads = Database::fetchAll(
-                "SELECT id, title, username, views, reply_count FROM threads WHERE created_at >= ? AND deleted_at IS NULL ORDER BY reply_count DESC, views DESC LIMIT 10",
-                [$weekStart]
-            );
+            $hotThreads = Thread::hotSince(strtotime('monday this week'), 10);
             Cache::set('threads:hot_weekly', $hotThreads, 300);
             $warmed++;
 
@@ -319,20 +286,16 @@ class CronSvc
         // 处理通知队列
         $total += QueueSvc::process('notification', function (array $payload) {
             if (!empty($payload['user_id']) && !empty($payload['content'])) {
-                Database::execute(
-                    "INSERT INTO notifications (user_id, from_user_id, type, title, content, target_type, target_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                    [
-                        (int)$payload['user_id'],
-                        (int)($payload['from_user_id'] ?? 0),
-                        $payload['type'] ?? 'system',
-                        $payload['title'] ?? '',
-                        $payload['content'],
-                        $payload['target_type'] ?? '',
-                        (int)($payload['target_id'] ?? 0),
-                        time(),
-                    ]
+                Notification::insertForUser(
+                    (int)$payload['user_id'],
+                    (int)($payload['from_user_id'] ?? 0),
+                    (string)($payload['type'] ?? 'system'),
+                    (string)($payload['title'] ?? ''),
+                    (string)$payload['content'],
+                    (string)($payload['target_type'] ?? ''),
+                    (int)($payload['target_id'] ?? 0),
+                    time()
                 );
-                Database::execute("UPDATE users SET unread_notifications = unread_notifications + 1 WHERE id = ?", [(int)$payload['user_id']]);
             }
         }, 50);
 

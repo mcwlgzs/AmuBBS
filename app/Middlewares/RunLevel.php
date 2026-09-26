@@ -65,7 +65,8 @@ class RunLevel implements Middleware
             '/captcha/',
             '/auth/callback/', '/auth/redirect/',
             '/api/auth/',  // API 认证路由始终放行
-            '/assets/', '/uploads/', '/plugin-assets/',
+            '/assets/', '/uploads/',
+            // 插件静态资源是路由（/plugin-assets/{plugin}/{file}），不经过 RunLevel，无需在此列出
             '/health', '/cron/',
             '/admin',  // 后台由 AdminAuth 中间件单独控制
         ];

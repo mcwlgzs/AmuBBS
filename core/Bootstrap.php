@@ -11,7 +11,6 @@ class Bootstrap
     private array $config = [];
     private Router $router;
     private Container $container;
-    private EventDispatcher $eventDispatcher;
     private ?PluginManager $pluginManager = null;
 
     private function __construct()
@@ -29,9 +28,11 @@ class Bootstrap
         // 加载配置
         $this->loadConfig();
 
-        // 初始化容器和事件系统
+        // 初始化容器
         $this->container = new Container();
-        $this->eventDispatcher = new EventDispatcher();
+
+        // 加载钩子函数（add_action / add_filter 等全局函数，供插件作者使用）
+        require_once APP_PATH . 'core/hooks.php';
 
         // 初始化核心组件（静态类，无需实例化）
         $this->initSecurity();
@@ -56,7 +57,6 @@ class Bootstrap
                 'Core\\' => APP_PATH . 'core/',
                 'App\\Controllers\\' => APP_PATH . 'app/Controllers/',
                 'App\\Services\\' => APP_PATH . 'app/Services/',
-                'App\\Repositories\\' => APP_PATH . 'app/Repositories/',
                 'App\\Middlewares\\' => APP_PATH . 'app/Middlewares/',
                 'App\\Events\\' => APP_PATH . 'app/Events/',
                 'App\\Listeners\\' => APP_PATH . 'app/Listeners/',
@@ -105,6 +105,9 @@ class Bootstrap
             return;
         }
 
+        // 应用已就绪：插件可以在这里挂载「每请求执行一次」的逻辑
+        Event::doAction('app.booted');
+
         // IP 黑名单检查
         try {
             // 批量预热：一次 MGET 拉取 IP 黑名单 + 页面缓存 + 设置，减少 Redis 往返
@@ -131,7 +134,6 @@ class Bootstrap
         }
 
         // 已安装，正常路由分发
-        $this->deferSessionUpdate();
         $this->router->dispatch();
     }
 
@@ -156,6 +158,8 @@ class Bootstrap
 
         $installApiRoutes = [
             '/install/check' => 'check',
+            '/install/next' => 'next',
+            '/install/back' => 'back',
             '/install/database' => 'database',
             '/install/admin' => 'admin',
             '/install/complete' => 'complete',
@@ -365,6 +369,10 @@ class Bootstrap
         // 首页
         $this->router->get('/', ['App\Controllers\Index', 'index']);
 
+        // 安装引导：未安装时走 handleInstall()，这里管的是「已安装后再访问 /install」，
+        // 由 Install::index() 提示怎么重新安装（否则只会看到一个 404）
+        $this->router->get('/install', ['App\Controllers\Install', 'index']);
+
         // Sitemap
         $this->router->get('/sitemap.xml', ['App\Controllers\Sitemap', 'index']);
 
@@ -472,6 +480,7 @@ class Bootstrap
         });
 
         // 忘记密码
+        $this->router->get('/forgot-password', ['App\Controllers\User', 'forgotPage']);
         $this->router->post('/forgot-password/send-code', ['App\Controllers\User', 'forgotSendCode'], [$strictRate]);
         $this->router->post('/forgot-password/reset', ['App\Controllers\User', 'forgotReset'], [$strictRate]);
 
@@ -513,6 +522,7 @@ class Bootstrap
 
         // 通知（需要登录）
         $this->router->get('/notifications', ['App\Controllers\Notification', 'index'], [$auth]);
+        $this->router->get('/notifications/popup', ['App\Controllers\Notification', 'popup'], [$auth]);
         $this->router->get('/notifications/unread-count', ['App\Controllers\Notification', 'unreadCount'], [$auth]);
         $this->router->post('/notifications/read-all', ['App\Controllers\Notification', 'readAll'], [$auth]);
         $this->router->post('/notifications/read', ['App\Controllers\Notification', 'readOne'], [$auth]);
@@ -537,6 +547,7 @@ class Bootstrap
 
         // 动态/说说
         $this->router->get('/moments', ['App\Controllers\Moment', 'index']);
+        $this->router->get('/moments/comments', ['App\Controllers\Moment', 'comments']);
         $this->router->post('/moments/create', ['App\Controllers\Moment', 'create'], [$auth]);
         $this->router->post('/moments/like', ['App\Controllers\Moment', 'like'], [$auth]);
         $this->router->post('/moments/comment', ['App\Controllers\Moment', 'comment'], [$auth]);
@@ -581,13 +592,14 @@ class Bootstrap
 
         // VIP 会员
         $this->router->get('/vip', ['App\Controllers\Vip', 'index']);
+        $this->router->get('/vip/quote', ['App\Controllers\Vip', 'quote']);
         $this->router->post('/vip/purchase', ['App\Controllers\Vip', 'purchase'], [$auth]);
 
         // 网址导航
         $this->router->get('/navigation', ['App\Controllers\NavLink', 'index']);
         $this->router->get('/navigation/go', ['App\Controllers\NavLink', 'go']);
 
-        // 插件静态资源（支持多级路径，如 tinymce/plugins/codesample/plugin.min.js）
+        // 插件静态资源（支持多级路径，如 myplugin/vendor/lib.min.js）
         $this->router->get('/plugin-assets/{plugin}/{file:.+}', function($plugin, $file) {
             // 安全校验：只允许字母数字和连字符的插件名，防止目录穿越
             if (!preg_match('/^[A-Za-z0-9_-]+$/', $plugin) || preg_match('/\.\./', $file)) {
@@ -611,7 +623,7 @@ class Bootstrap
                 return;
             }
             $ext = strtolower(pathinfo($path, PATHINFO_EXTENSION));
-            $mimeMap = ['png' => 'image/png', 'jpg' => 'image/jpeg', 'jpeg' => 'image/jpeg', 'gif' => 'image/gif', 'webp' => 'image/webp', 'svg' => 'image/svg+xml', 'css' => 'text/css', 'js' => 'application/javascript', 'woff' => 'font/woff', 'woff2' => 'font/woff2', 'ttf' => 'font/ttf', 'eot' => 'application/vnd.ms-fontobject'];
+            $mimeMap = ['png' => 'image/png', 'jpg' => 'image/jpeg', 'jpeg' => 'image/jpeg', 'gif' => 'image/gif', 'webp' => 'image/webp', 'svg' => 'image/svg+xml', 'css' => 'text/css', 'js' => 'application/javascript', 'woff' => 'font/woff', 'woff2' => 'font/woff2', 'ttf' => 'font/ttf', 'eot' => 'application/vnd.ms-fontobject', 'json' => 'application/json', 'map' => 'application/json', 'ico' => 'image/x-icon'];
             $mime = $mimeMap[$ext] ?? 'application/octet-stream';
             // 用 filemtime+filesize 生成 ETag，避免 md5_file 每次读整个文件
             $etag = '"' . filemtime($path) . '-' . filesize($path) . '"';
@@ -649,11 +661,15 @@ class Bootstrap
 
         // 概览（shell 框架页 + 子页面）
         $this->router->get('/admin', ['App\Controllers\Admin\DashboardController', 'shell'], [$adminAuth]);
+        // 外壳启动时拉的菜单数据（layuimini 的 iniUrl）
+        $this->router->get('/admin/menu.json', ['App\Controllers\Admin\DashboardController', 'menu'], [$adminAuth]);
         $this->router->get('/admin/dashboard', ['App\Controllers\Admin\DashboardController', 'dashboard'], [$adminAuth]);
         $this->router->get('/admin/monitor', ['App\Controllers\Admin\DashboardController', 'monitor'], [$adminAuth]);
 
         // 板块管理
         $this->router->get('/admin/forums', ['App\Controllers\Admin\ForumController', 'forums'], [$adminAuth]);
+        $this->router->get('/admin/forums/form', ['App\Controllers\Admin\ForumController', 'forumForm'], [$adminAuth]);
+        $this->router->get('/admin/forums/access', ['App\Controllers\Admin\ForumController', 'forumAccess'], [$adminAuth]);
         $this->router->post('/admin/forums/create', ['App\Controllers\Admin\ForumController', 'forumCreate'], [$adminAuth]);
         $this->router->post('/admin/forums/update', ['App\Controllers\Admin\ForumController', 'forumUpdate'], [$adminAuth]);
         $this->router->post('/admin/forums/delete', ['App\Controllers\Admin\ForumController', 'forumDelete'], [$adminAuth]);
@@ -688,6 +704,7 @@ class Bootstrap
 
         // 公告管理
         $this->router->get('/admin/announcements', ['App\Controllers\Admin\AnnounceController', 'announcements'], [$adminAuth]);
+        $this->router->get('/admin/announcements/form', ['App\Controllers\Admin\AnnounceController', 'announcementForm'], [$adminAuth]);
         $this->router->post('/admin/announcements/create', ['App\Controllers\Admin\AnnounceController', 'announcementCreate'], [$adminAuth]);
         $this->router->post('/admin/announcements/update', ['App\Controllers\Admin\AnnounceController', 'announcementUpdate'], [$adminAuth]);
         $this->router->post('/admin/announcements/toggle', ['App\Controllers\Admin\AnnounceController', 'announcementToggle'], [$adminAuth]);
@@ -695,22 +712,24 @@ class Bootstrap
 
         // 用户管理
         $this->router->get('/admin/users', ['App\Controllers\Admin\UserController', 'users'], [$adminAuth]);
+        $this->router->get('/admin/users/form', ['App\Controllers\Admin\UserController', 'userForm'], [$adminAuth]);
         $this->router->post('/admin/users/update', ['App\Controllers\Admin\UserController', 'userUpdate'], [$adminAuth]);
         $this->router->post('/admin/users/batch', ['App\Controllers\Admin\UserController', 'userBatchAction'], [$adminAuth]);
         $this->router->get('/admin/user-settings', ['App\Controllers\Admin\UserController', 'userSettings'], [$adminAuth]);
         $this->router->post('/admin/user-settings', ['App\Controllers\Admin\UserController', 'userSettingsSave'], [$adminAuth]);
         $this->router->get('/admin/vip-settings', ['App\Controllers\Admin\UserController', 'vipSettings'], [$adminAuth]);
         $this->router->post('/admin/vip-settings', ['App\Controllers\Admin\UserController', 'vipSettingsSave'], [$adminAuth]);
-        $this->router->get('/admin/online-users', ['App\Controllers\Admin\UserController', 'onlineUsers'], [$adminAuth]);
         $this->router->get('/admin/credit-logs', ['App\Controllers\Admin\UserController', 'creditLogs'], [$adminAuth]);
 
         // 用户组管理
         $this->router->get('/admin/user-groups', ['App\Controllers\Admin\UserGroupController', 'userGroups'], [$adminAuth]);
+        $this->router->get('/admin/user-groups/form', ['App\Controllers\Admin\UserGroupController', 'userGroupForm'], [$adminAuth]);
         $this->router->post('/admin/user-groups/save', ['App\Controllers\Admin\UserGroupController', 'userGroupSave'], [$adminAuth]);
         $this->router->post('/admin/user-groups/delete', ['App\Controllers\Admin\UserGroupController', 'userGroupDelete'], [$adminAuth]);
 
         // 等级管理
         $this->router->get('/admin/levels', ['App\Controllers\Admin\LevelController', 'levels'], [$adminAuth]);
+        $this->router->get('/admin/levels/form', ['App\Controllers\Admin\LevelController', 'levelForm'], [$adminAuth]);
         $this->router->post('/admin/levels/save', ['App\Controllers\Admin\LevelController', 'levelSave'], [$adminAuth]);
         $this->router->post('/admin/levels/delete', ['App\Controllers\Admin\LevelController', 'levelDelete'], [$adminAuth]);
 
@@ -731,6 +750,7 @@ class Bootstrap
         $this->router->get('/admin/cache', ['App\Controllers\Admin\SystemController', 'cacheManage'], [$adminAuth]);
         $this->router->post('/admin/cache/clear', ['App\Controllers\Admin\SystemController', 'cacheClear'], [$adminAuth]);
         $this->router->get('/admin/cluster', ['App\Controllers\Admin\SystemController', 'cluster'], [$adminAuth]);
+        $this->router->get('/admin/cluster/form', ['App\Controllers\Admin\SystemController', 'clusterForm'], [$adminAuth]);
         $this->router->post('/admin/cluster/create', ['App\Controllers\Admin\SystemController', 'clusterCreate'], [$adminAuth]);
         $this->router->post('/admin/cluster/toggle', ['App\Controllers\Admin\SystemController', 'clusterToggle'], [$adminAuth]);
         $this->router->post('/admin/cluster/delete', ['App\Controllers\Admin\SystemController', 'clusterDelete'], [$adminAuth]);
@@ -740,8 +760,15 @@ class Bootstrap
         $this->router->post('/admin/ip-blacklist/create', ['App\Controllers\Admin\SystemController', 'ipBlacklistCreate'], [$adminAuth]);
         $this->router->post('/admin/ip-blacklist/delete', ['App\Controllers\Admin\SystemController', 'ipBlacklistDelete'], [$adminAuth]);
 
+        // 插件管理（启用/停用只写状态文件，页面提供按钮，共享主机不必手改 JSON）
+        $this->router->get('/admin/plugins', ['App\Controllers\Admin\PluginController', 'plugins'], [$adminAuth]);
+        $this->router->post('/admin/plugins/toggle', ['App\Controllers\Admin\PluginController', 'pluginToggle'], [$adminAuth]);
+        $this->router->post('/admin/plugins/uninstall', ['App\Controllers\Admin\PluginController', 'pluginUninstall'], [$adminAuth]);
+
         // 导航管理
         $this->router->get('/admin/navigation', ['App\Controllers\Admin\SystemController', 'navigation'], [$adminAuth]);
+        $this->router->get('/admin/navigation/category-form', ['App\Controllers\Admin\SystemController', 'navCategoryForm'], [$adminAuth]);
+        $this->router->get('/admin/navigation/link-form', ['App\Controllers\Admin\SystemController', 'navLinkForm'], [$adminAuth]);
         $this->router->post('/admin/nav-categories/create', ['App\Controllers\Admin\SystemController', 'navCategoryCreate'], [$adminAuth]);
         $this->router->post('/admin/nav-categories/update', ['App\Controllers\Admin\SystemController', 'navCategoryUpdate'], [$adminAuth]);
         $this->router->post('/admin/nav-categories/delete', ['App\Controllers\Admin\SystemController', 'navCategoryDelete'], [$adminAuth]);
@@ -755,7 +782,7 @@ class Bootstrap
         $this->router->post('/admin/friend-links/delete', ['App\Controllers\Admin\SystemController', 'friendLinkDelete'], [$adminAuth]);
         $this->router->get('/admin/logs', ['App\Controllers\Admin\SystemController', 'logs'], [$adminAuth]);
 
-        // 后台 API 端点（layui table 数据源）
+        // 后台 API 端点（返回 {code,msg,data,count} 的 JSON，兼容旧调用方；后台页面本身不再依赖它们）
         $this->router->get('/admin/api/forums', ['App\Controllers\Admin\ForumController', 'forumsApi'], [$adminAuth]);
         $this->router->get('/admin/api/threads', ['App\Controllers\Admin\ThreadController', 'threadsApi'], [$adminAuth]);
         $this->router->get('/admin/api/posts', ['App\Controllers\Admin\PostController', 'postsApi'], [$adminAuth]);
@@ -770,7 +797,6 @@ class Bootstrap
         $this->router->get('/admin/api/friend-links', ['App\Controllers\Admin\SystemController', 'friendLinksApi'], [$adminAuth]);
         $this->router->get('/admin/api/logs', ['App\Controllers\Admin\SystemController', 'logsApi'], [$adminAuth]);
         $this->router->get('/admin/api/credit-logs', ['App\Controllers\Admin\UserController', 'creditLogsApi'], [$adminAuth]);
-        $this->router->get('/admin/api/online-users', ['App\Controllers\Admin\UserController', 'onlineUsersApi'], [$adminAuth]);
         $this->router->get('/admin/api/levels', ['App\Controllers\Admin\LevelController', 'levelsApi'], [$adminAuth]);
         $this->router->get('/admin/api/user-groups', ['App\Controllers\Admin\UserGroupController', 'userGroupsApi'], [$adminAuth]);
 
@@ -841,6 +867,8 @@ class Bootstrap
         $sessionConf = $appConfig['session'] ?? [];
         $driver = $sessionConf['driver'] ?? 'file';
 
+        $usingRedisHandler = false;
+
         if ($driver === 'redis' && extension_loaded('redis')) {
             try {
                 $cacheConf = $config['cache']['redis'] ?? [];
@@ -853,22 +881,66 @@ class Bootstrap
                 ], $sessionConf['lifetime'] ?? 7200);
 
                 session_set_save_handler($handler, true);
+                $usingRedisHandler = true;
             } catch (\Throwable $e) {
                 // Redis 不可用时回退到文件 Session
                 error_log('[Session] Redis 不可用，回退到文件驱动: ' . $e->getMessage());
             }
         }
 
+        // 文件 Session：存到应用自己的 storage/sessions/，
+        // 避免共享主机上系统临时目录不可写、或与同主机其它站点混用
+        if (!$usingRedisHandler) {
+            $sessionPath = $sessionConf['path'] ?? (APP_PATH . 'storage/sessions/');
+            if (!is_dir($sessionPath)) {
+                @mkdir($sessionPath, 0755, true);
+            }
+            if (is_dir($sessionPath) && is_writable($sessionPath)) {
+                session_save_path($sessionPath);
+            }
+        }
+
         // Session 安全选项
-        $secure = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off');
+        // Secure 判定：直连 HTTPS / 443 端口，或「已显式配置可信代理 + 代理声明 https」。
+        // 只看 $_SERVER['HTTPS'] 会让 nginx 终止 TLS 的部署漏掉 Secure 标志。
+        $secure = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off')
+            || (int)($_SERVER['SERVER_PORT'] ?? 0) === 443;
+
+        if (!$secure
+            && ($_SERVER['HTTP_X_FORWARDED_PROTO'] ?? '') === 'https'
+            && \App\Services\SettingSvc::get('trusted_proxies', '') !== '') {
+            $secure = true;
+        }
+
+        $sessionLifetime = (int)($sessionConf['lifetime'] ?? 7200);
         session_set_cookie_params([
-            'lifetime' => $sessionConf['lifetime'] ?? 7200,
+            'lifetime' => $sessionLifetime,
             'path' => '/',
             'domain' => '',
             'secure' => $secure,
             'httponly' => true,
             'samesite' => 'Lax',
         ]);
+
+        // 服务端 session 寿命必须与 Cookie lifetime 对齐：
+        // php.ini 默认 gc_maxlifetime=1440，而这里 Cookie 活 7200 →
+        // 用户会在 24 分钟到 2 小时之间被静默登出（有 remember-me 时更难发现）。
+        if ($sessionLifetime > 0) {
+            @ini_set('session.gc_maxlifetime', (string)$sessionLifetime);
+        }
+        // 低流量站点默认 1/1000 的 GC 概率几乎等于不清理，storage/sessions 会无限增长；
+        // 这里是自有目录，调高概率代价可控。
+        @ini_set('session.gc_probability', '1');
+        @ini_set('session.gc_divisor', '100');
+        // 拒绝未知 session id（会话固定攻击的一层防护）
+        @ini_set('session.use_strict_mode', '1');
+
+        // session_start() 之前必须确认没有输出：一旦有输出它会失败并抛 warning，
+        // 结果是 $_SESSION 保持为空、CSRF token 取不到，页面上的表单提交全部 403
+        if (headers_sent($hFile, $hLine)) {
+            error_log("[Session] 输出已发送，无法启动 Session（{$hFile}:{$hLine}）");
+            return;
+        }
 
         session_start();
     }
@@ -909,81 +981,6 @@ class Bootstrap
      * 延迟更新 session 上下文到响应发送后
      * 避免 DB 写操作阻塞首页响应
      */
-    private function deferSessionUpdate(): void
-    {
-        register_shutdown_function(function () {
-            // 先刷出响应给客户端
-            if (function_exists('fastcgi_finish_request')) {
-                fastcgi_finish_request();
-            }
-            if (session_status() === PHP_SESSION_ACTIVE) {
-                $this->updateSessionContext();
-            } else {
-                // 匿名游客：用 IP+UA 哈希生成伪 session ID 写入 sessions 表
-                $this->trackGuestVisit();
-            }
-        });
-    }
-
-    /**
-     * 追踪匿名游客访问（无 PHP session 时）
-     */
-    private function trackGuestVisit(): void
-    {
-        try {
-            $ip = $_SERVER['REMOTE_ADDR'] ?? '';
-            $ua = $_SERVER['HTTP_USER_AGENT'] ?? '';
-            $guestId = 'guest_' . substr(md5($ip . '|' . $ua), 0, 24);
-
-            // 30秒内同一游客不重复写DB，大幅减少匿名请求的DB开销
-            $throttleKey = "guest:throttle:{$guestId}";
-            if (\Core\Cache::add($throttleKey, 1, 30)) {
-                $url = mb_substr($_SERVER['REQUEST_URI'] ?? '', 0, 255);
-                $now = time();
-
-                $forumId = 0;
-                if (preg_match('#^/forum/(\d+)#', $url, $m)) {
-                    $forumId = (int)$m[1];
-                }
-
-                \Core\Database::execute("
-                    INSERT INTO sessions (id, user_id, ip, user_agent, last_activity, current_forum_id, current_url)
-                    VALUES (?, 0, ?, ?, ?, ?, ?)
-                    ON DUPLICATE KEY UPDATE
-                        last_activity = VALUES(last_activity),
-                        current_forum_id = VALUES(current_forum_id),
-                        current_url = VALUES(current_url)
-                ", [$guestId, $ip, mb_substr($ua, 0, 500), $now, $forumId, $url]);
-            }
-        } catch (\Throwable $e) {
-            // 非关键操作
-        }
-    }
-
-    /**
-     * 更新 session 浏览上下文（当前 URL、板块 ID）
-     */
-    private function updateSessionContext(): void
-    {
-        try {
-            $url = $_SERVER['REQUEST_URI'] ?? '';
-            $forumId = 0;
-
-            // 从 URL 解析当前板块 ID
-            if (preg_match('#^/forum/(\d+)#', $url, $m)) {
-                $forumId = (int)$m[1];
-            } elseif (preg_match('#^/thread/(\d+)#', $url, $m)) {
-                // 帖子详情页：从缓存或 session 获取板块 ID
-                $forumId = (int)($_SESSION['current_forum_id'] ?? 0);
-            }
-
-            \App\Services\OnlineSvc::updateContext($forumId, $url);
-        } catch (\Throwable $e) {
-            // 非关键操作，不中断请求，但记录日志便于排查
-            error_log('[Bootstrap] updateSessionContext failed: ' . $e->getMessage());
-        }
-    }
-
     /**
      * 注册错误处理
      */
@@ -1031,6 +1028,11 @@ class Bootstrap
                 }
                 echo json_encode(['success' => false, 'message' => DEBUG ? $exception->getMessage() : '服务器错误']);
             } elseif (DEBUG) {
+                // 调试态同样要给出 500：否则异常页是 200，监控与冒烟测试都会漏掉
+                if (!headers_sent()) {
+                    header('Content-Type: text/html; charset=UTF-8');
+                    http_response_code(500);
+                }
                 echo "<pre>" . htmlspecialchars($error . "\n" . $exception->getTraceAsString()) . "</pre>";
             } else {
                 if (!headers_sent()) {
@@ -1064,10 +1066,11 @@ class Bootstrap
      */
     private function isAjaxRequest(): bool
     {
+        // 注意：不要用 CONTENT_TYPE 或 X-CSRF-Token 判断——这两个头任何客户端都能随手带上，
+        // 会让调用方自行决定错误响应走 JSON 还是 HTML 分支。htmx 有专门的 HX-Request 头。
         return (!empty($_SERVER['HTTP_X_REQUESTED_WITH']) && strtolower($_SERVER['HTTP_X_REQUESTED_WITH']) === 'xmlhttprequest')
-            || (!empty($_SERVER['HTTP_ACCEPT']) && strpos($_SERVER['HTTP_ACCEPT'], 'application/json') !== false)
-            || (!empty($_SERVER['CONTENT_TYPE']) && strpos($_SERVER['CONTENT_TYPE'], 'application/json') !== false)
-            || (!empty($_SERVER['HTTP_X_CSRF_TOKEN']));
+            || !empty($_SERVER['HTTP_HX_REQUEST'])
+            || (!empty($_SERVER['HTTP_ACCEPT']) && strpos($_SERVER['HTTP_ACCEPT'], 'application/json') !== false);
     }
 
     private function getErrorType(int $type): string
@@ -1085,7 +1088,10 @@ class Bootstrap
     }
 
     /**
-     * 初始化插件系统（基于 plugins.json 注册表，跳过 glob 目录扫描）
+     * 初始化插件系统
+     *
+     * 只加载「已启用」的插件。启用状态存在 storage/plugin_config/plugins.json，
+     * 不依赖数据库、不需要 Composer、不需要任何常驻进程。
      */
     private function initPlugins(): void
     {
@@ -1094,11 +1100,10 @@ class Bootstrap
             return;
         }
 
-        $this->pluginManager = new PluginManager($this->container, $this->eventDispatcher);
-        $loader = new PluginLoader($this->pluginManager, $pluginPath);
-        $loader->loadEnabled($this->pluginManager->getEnabled());
-        $this->pluginManager->boot();
-        $this->pluginManager->syncAllAssets();
+        $this->pluginManager = new PluginManager($pluginPath, APP_PATH . 'storage/plugin_config/');
+
+        $loader = new PluginLoader($this->pluginManager);
+        $loader->load($this->pluginManager->getEnabled());
     }
 
     /**
@@ -1119,14 +1124,6 @@ class Bootstrap
     public function getContainer(): Container
     {
         return $this->container;
-    }
-
-    /**
-     * 获取事件分发器
-     */
-    public function getEventDispatcher(): EventDispatcher
-    {
-        return $this->eventDispatcher;
     }
 
     /**

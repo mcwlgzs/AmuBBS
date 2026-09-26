@@ -1,0 +1,73 @@
+# AMuBBS — Apache 配置
+#
+# 共享虚拟主机（Apache + mod_rewrite）部署时：
+#   1. 把本目录（public/）设为网站根目录
+#   2. 确保主机开启了 mod_rewrite（绝大多数共享主机默认开启）
+#
+# 如果站点装在子目录（例如 https://example.com/bbs/），
+# 请把下面被注释的 RewriteBase 打开并改成你的子目录。
+
+# ---------------------------------------------------------------------------
+# 1) 前端控制器重写：所有不存在的路径都交给 index.php
+# ---------------------------------------------------------------------------
+<IfModule mod_rewrite.c>
+    RewriteEngine On
+
+    # RewriteBase /bbs/
+
+    # 真实存在的文件或目录直接返回（静态资源、上传文件）
+    RewriteCond %{REQUEST_FILENAME} -f [OR]
+    RewriteCond %{REQUEST_FILENAME} -d
+    RewriteRule ^ - [L]
+
+    # 其余请求交给入口文件（查询串会被 Apache 自动保留）
+    RewriteRule ^ index.php [L]
+</IfModule>
+
+# ---------------------------------------------------------------------------
+# 2) 基础加固
+# ---------------------------------------------------------------------------
+# 关闭目录列表，避免直接浏览目录
+Options -Indexes
+
+# 禁止访问隐藏文件（.env、.git 等不会出现在 public/，这里是兜底）
+<IfModule mod_authz_core.c>
+    <FilesMatch "^\.">
+        Require all denied
+    </FilesMatch>
+    <FilesMatch "\.(md|sql|lock|log|ini|bak|sh|yml|yaml|json)$">
+        Require all denied
+    </FilesMatch>
+</IfModule>
+<IfModule !mod_authz_core.c>
+    <FilesMatch "^\.">
+        Deny from all
+    </FilesMatch>
+    <FilesMatch "\.(md|sql|lock|log|ini|bak|sh|yml|yaml|json)$">
+        Deny from all
+    </FilesMatch>
+</IfModule>
+
+# ---------------------------------------------------------------------------
+# 3) 静态资源缓存（可选，但小机器上很有用，能省掉大量重复请求）
+# ---------------------------------------------------------------------------
+<IfModule mod_expires.c>
+    ExpiresActive On
+    ExpiresByType text/css                "access plus 7 days"
+    ExpiresByType application/javascript  "access plus 7 days"
+    ExpiresByType image/jpeg              "access plus 30 days"
+    ExpiresByType image/png               "access plus 30 days"
+    ExpiresByType image/gif               "access plus 30 days"
+    ExpiresByType image/svg+xml           "access plus 30 days"
+    ExpiresByType image/webp              "access plus 30 days"
+    ExpiresByType font/woff2              "access plus 30 days"
+</IfModule>
+
+# ---------------------------------------------------------------------------
+# 4) 压缩（可选）
+# ---------------------------------------------------------------------------
+<IfModule mod_deflate.c>
+    AddOutputFilterByType DEFLATE text/html text/plain text/css text/xml
+    AddOutputFilterByType DEFLATE application/javascript application/json
+    AddOutputFilterByType DEFLATE image/svg+xml
+</IfModule>

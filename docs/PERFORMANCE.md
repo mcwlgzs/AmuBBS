@@ -1,5 +1,10 @@
 # AMuBBS 性能优化指南
 
+> ⚠️ **历史文档**：本文写于「默认用 Redis」的阶段。当前项目**默认是文件缓存**
+> （`CACHE_DRIVER=auto` 在没有 Redis 扩展时自动降级），目标环境是共享虚拟主机，
+> 所以文中「上 Redis / 上连接池 / 上 JIT」的建议请当作**可选升级路线**，
+> 不是运行前提。现状与真实 API 见 [`02-架构.md`](02-架构.md) 的 2.2.4 与 [`04-性能.md`](04-性能.md)。
+
 本文档记录了 AMuBBS 论坛系统的性能优化措施和使用说明。
 
 ## 📊 优化概览
@@ -27,17 +32,24 @@ mysql -u your_user -p your_database < install/performance_indexes.sql
 
 ### 新增索引列表
 
-1. **posts 表** - `idx_posts_user_created`：优化用户发帖历史查询
-2. **thread_tags 表** - `idx_thread_tags_tag_thread`：优化标签关联查询
-3. **forum_access 表** - `idx_forum_access_group_forum`：优化权限检查
-4. **threads 表** - `idx_threads_forum_top_created`：优化置顶帖查询
-5. **threads 表** - `idx_threads_forum_highlight`：优化精华帖查询
-6. **users 表** - `idx_users_username_deleted`：优化用户名搜索
-7. **credit_logs 表** - `idx_credit_logs_user_created`：优化积分记录查询
-8. **mod_logs 表** - `idx_mod_logs_admin_created`：优化管理日志查询
-9. **tags 表** - `idx_tags_name`：优化标签名称查询
-10. **announcements 表** - `idx_announcements_status_rank`：优化公告查询
-11. **friend_links 表** - `idx_friend_links_status_rank`：优化友链查询
+> 本列表以 [`install/performance_indexes.sql`](../install/performance_indexes.sql) 为准（脚本 = 唯一事实来源，列表跟随同步）。
+> 脚本是**幂等**的（`ADD INDEX IF NOT EXISTS`，MariaDB 10.1.4+ / MySQL 8.0.29+），可以重复执行；
+> 老站升级用 [`install/migrations/2026_09_25_add_list_indexes.sql`](../install/migrations/2026_09_25_add_list_indexes.sql)，
+> 新装站点的这些索引已经写在 `install/database.sql` 的 `CREATE TABLE` 里。
+
+1. **threads 表** - `idx_threads_all_list`（`deleted_at, is_top DESC, created_at DESC`）：优化首页/全部帖子页的全局排序
+2. **threads 表** - `idx_threads_all_hot`（`deleted_at, is_top DESC, reply_count DESC, views DESC`）：优化「全部帖子-回复数」排序
+3. **posts 表** - `idx_posts_thread_deleted_created`（`thread_id, deleted_at, created_at`）：优化主题内回复分页
+4. **users 表** - `idx_users_active_login`（`deleted_at, login_at DESC`）：优化侧栏活跃用户列表
+
+> **历史上那份「11 条索引建议清单」已废弃**：其中 `mod_logs` 表在本项目不存在、
+> `idx_announce_status` 引用了不存在的 `announcements.status`、`idx_links_status` 引用了不存在的 `friend_links.rank`，
+> 直接在库里执行必然报 ERROR 1072（这三条也是本项目早期版本的原始缺陷）。
+> 其余条目（`idx_posts_user_created` / `idx_thread_tags_tag_thread` / `idx_forum_access_group` /
+> `idx_users_username` / `idx_tags_name` / `idx_credit_user_time` / `idx_logs_user_time` /
+> `idx_announcements_active` / `idx_links_status_sort` / `idx_threads_forum_top` / `idx_threads_forum_hl`）
+> 与 `install/database.sql` 建表时已有的索引重复或缺少量级支撑，**刻意不建** ——
+> 逐条理由和 EXPLAIN 实测记录在 `install/performance_indexes.sql` 头部注释里。
 
 ### 验证索引
 
@@ -119,50 +131,6 @@ Database::execute("UPDATE tags SET thread_count = thread_count + 1 WHERE id IN (
 ```
 
 **收益**：从 N 次查询减少到 3 次查询
-
----
-
-## ✏️ TinyMCE 编辑器优化
-
-### 优化内容
-
-#### 1. 精简插件列表
-
-**优化前**：加载 28 个插件
-```javascript
-var fullPlugins = [
-    'advlist', 'anchor', 'autolink', 'autoresize', 'autosave',
-    'charmap', 'code', 'codesample', 'directionality',
-    'emoticons', 'fullscreen', 'help', 'image', 'importcss',
-    'insertdatetime', 'link', 'lists', 'media', 'nonbreaking',
-    'pagebreak', 'preview', 'quickbars', 'save', 'searchreplace',
-    'table', 'template', 'visualblocks', 'visualchars', 'wordcount',
-    'xiunoimgup'
-];
-```
-
-**优化后**：
-- **简化模式**：7 个核心插件
-- **完整模式**：15 个常用插件
-
-```javascript
-// 简化模式
-if (mode === 'simple') {
-    return ['autolink', 'autoresize', 'link', 'lists', 'emoticons', 'code', 'xiunoimgup'];
-}
-
-// 完整模式
-return [
-    'advlist', 'autolink', 'autoresize', 'link', 'lists',
-    'emoticons', 'code', 'codesample', 'image', 'xiunoimgup',
-    'table', 'fullscreen', 'preview', 'searchreplace', 'wordcount'
-];
-```
-
-#### 2. 使用建议
-
-- 回帖使用简化模式：`data-mode="simple"`
-- 发帖使用完整模式：`data-mode="full"`（默认）
 
 ---
 

@@ -1,0 +1,9 @@
+{
+  "name": "example",
+  "title": "示例插件",
+  "version": "1.0.0",
+  "description": "演示 AMuBBS 插件系统：如何用 add_action / add_filter 挂载钩子",
+  "author": "AMuBBS",
+  "entry": "Plugin.php",
+  "class": "Plugins\\Example\\Plugin"
+}

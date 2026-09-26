@@ -5,88 +5,102 @@
 
 namespace App\Controllers\Admin;
 
-use Core\Database;
+use App\Models\Attachment;
 use Core\Event;
 use App\Events\Events;
 
 class AttachController extends AdminBase
 {
-    private function buildAttachmentsWhere(): array
-    {
-        $search = trim($_GET['search'] ?? '');
-        $type = trim($_GET['type'] ?? '');
-
-        $where = "WHERE 1=1";
-        $params = [];
-
-        if ($search !== '') {
-            $where .= " AND a.filename LIKE ?";
-            $params[] = "%" . addcslashes($search, '%_\\') . "%";
-        }
-        if ($type === 'image') {
-            $where .= " AND a.is_image = 1";
-        } elseif ($type === 'file') {
-            $where .= " AND a.is_image = 0";
-        }
-
-        return [$where, $params];
-    }
-
     public function attachments(): void
     {
         $this->requireAdmin();
-
-        $totalSize = Database::fetchOne("SELECT SUM(filesize) as s FROM attachments")['s'] ?? 0;
-        $imageCount = Database::fetchOne("SELECT COUNT(*) as c FROM attachments WHERE is_image = 1")['c'] ?? 0;
-        $fileCount = Database::fetchOne("SELECT COUNT(*) as c FROM attachments WHERE is_image = 0")['c'] ?? 0;
-
-        $this->render('admin/attachments', [
-            'pageTitle' => '附件管理',
-            'totalSize' => $totalSize,
-            'imageCount' => $imageCount,
-            'fileCount' => $fileCount,
-        ]);
+        $this->renderAttachmentsPage();
     }
 
     /**
-     * 附件列表 API
+     * 附件数据（页面与 JSON API 共用同一份查询逻辑）
+     *
+     * @return array{rows: array, total: int}
+     */
+    private function fetchAttachments(int $page, int $limit): array
+    {
+        return Attachment::adminList(
+            trim($_GET['search'] ?? ''),
+            trim($_GET['type'] ?? ''),
+            $page,
+            $limit
+        );
+    }
+
+    /**
+     * 顶部统计（附件总数 / 图片 / 文件 / 占用空间）
+     */
+    private function attachmentStats(): array
+    {
+        return Attachment::adminStats();
+    }
+
+    /**
+     * 渲染附件管理页面片段（GET 与删除后的刷新共用同一个渲染路径）
+     */
+    private function renderAttachmentsPage(): void
+    {
+        $page   = max(1, (int)($_GET['page'] ?? 1));
+        $limit  = 20;
+        $search = trim($_GET['search'] ?? '');
+        $type   = trim($_GET['type'] ?? '');
+
+        $result = $this->fetchAttachments($page, $limit);
+
+        $this->renderAdmin('admin/attachments', $this->attachmentStats() + [
+            'pageTitle' => '附件管理',
+            'rows'      => $result['rows'],
+            'total'     => $result['total'],
+            'page'      => $page,
+            'pages'     => max(1, (int)ceil($result['total'] / $limit)),
+            'search'    => $search,
+            'type'      => $type,
+        ], 'attachments');
+    }
+
+    /**
+     * 附件列表 API（保留，供外部 AJAX 调用）
      */
     public function attachmentsApi(): void
     {
         $this->requireAdmin();
 
-        [$where, $params] = $this->buildAttachmentsWhere();
-        $page = max(1, (int)($_GET['page'] ?? 1));
+        $page  = max(1, (int)($_GET['page'] ?? 1));
         $limit = min(50, max(10, (int)($_GET['limit'] ?? 20)));
 
-        $total = (int)(Database::fetchOne("SELECT COUNT(*) as cnt FROM attachments a {$where}", $params)['cnt'] ?? 0);
-        $offset = ($page - 1) * $limit;
-
-        $attachments = Database::fetchAll(
-            "SELECT a.*, u.username FROM attachments a LEFT JOIN users u ON a.user_id = u.id {$where} ORDER BY a.id DESC LIMIT ? OFFSET ?",
-            array_merge($params, [$limit, $offset])
-        );
-
-        $this->layuiJson($attachments, $total);
+        $result = $this->fetchAttachments($page, $limit);
+        $this->jsonTable($result['rows'], $result['total']);
     }
 
     public function attachmentDelete(): void
     {
         $this->requireAdmin();
 
-        $input = json_decode(file_get_contents('php://input'), true);
+        $input = $this->input();
         $id = (int)($input['id'] ?? 0);
-        if ($id <= 0) { $this->error('参数错误'); return; }
 
-        $att = Database::fetchOne("SELECT * FROM attachments WHERE id = ?", [$id]);
-        if (!$att) { $this->error('附件不存在'); return; }
+        if ($id <= 0) {
+            $this->respondMutation(false, '参数错误', fn() => $this->renderAttachmentsPage());
+            return;
+        }
+
+        $att = Attachment::findFresh($id);
+        if (!$att) {
+            $this->respondMutation(false, '附件不存在', fn() => $this->renderAttachmentsPage());
+            return;
+        }
 
         $filePath = APP_PATH . 'public' . $att['filepath'];
         if (file_exists($filePath)) {
             @unlink($filePath);
         }
 
-        Database::execute("DELETE FROM attachments WHERE id = ?", [$id]);
+        Attachment::remove($id);
         Event::dispatch(Events::ADMIN_THREAD_DELETED, [
             'action' => '删除附件',
             'admin_id' => $_SESSION['user_id'],
@@ -94,6 +108,7 @@ class AttachController extends AdminBase
             'target_type' => 'attachment',
             'target_id' => $id,
         ]);
-        $this->success('附件已删除');
+
+        $this->respondMutation(true, '附件已删除', fn() => $this->renderAttachmentsPage());
     }
 }

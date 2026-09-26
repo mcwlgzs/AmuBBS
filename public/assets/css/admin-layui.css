@@ -1,0 +1,163 @@
+/**
+ * 后台样式（layuimini 之上的少量覆写）
+ * ==========================================================================
+ * layuimini 自带完整的布局、tab、菜单与配色（含 5 套配色方案），
+ * layui 自带表格 / 表单 / 弹层 / 日期等全部组件。
+ * 所以这里只写「这个项目自己的东西」，其余一律用现成的类：
+ *
+ *   - 品牌 logo 的尺寸（layuimini 默认那张 logo.png 比我们的大）
+ *   - 表格里的行内操作按钮间距（layui 默认两个 .layui-btn 之间是 10px，
+ *     一列放三个按钮时太散）
+ *   - 两个本项目反复用到的小标签（layui 的 badge 不够表达「已锁定」这类状态）
+ *
+ * 千万不要在这里重新实现 layuimini / layui 已经提供的东西。
+ * ==========================================================================
+ */
+
+/* ------------------------------------------------------------------ */
+/* 外壳：品牌区                                                        */
+/* ------------------------------------------------------------------ */
+.layuimini-logo a {
+  display: flex;
+  align-items: center;
+}
+
+.layuimini-logo img {
+  width: 32px;
+  height: 32px;
+  margin-right: 8px;
+  vertical-align: middle;
+}
+
+.layuimini-logo h1 {
+  display: inline-block;
+  font-size: 16px;
+  font-weight: 500;
+  color: #fff;
+  letter-spacing: .5px;
+}
+
+/* 折叠侧栏后只剩 logo，标题让位（layuimini 折叠时给 logo 区留的位置很窄） */
+.layuimini-mini .layuimini-logo h1 {
+  display: none;
+}
+
+/* ------------------------------------------------------------------ */
+/* 子页面：表格与表单                                                  */
+/* ------------------------------------------------------------------ */
+
+/* 行内操作按钮收紧一点，一列三个也不至于把表格撑宽 */
+.layui-table-cell .layui-btn + .layui-btn {
+  margin-left: 4px;
+}
+
+.layui-table-cell .layui-btn-xs {
+  padding: 0 6px;
+}
+
+/* 表格里的次要文字 */
+.admin-muted {
+  color: #999;
+}
+
+/* 表格里的等宽数字，纵向才对得齐 */
+.layui-table-cell .admin-num {
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum" 1;
+}
+
+/* 长文本截断（表格列宽受限时用） */
+.admin-ellipsis {
+  display: inline-block;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  vertical-align: bottom;
+}
+
+/* ------------------------------------------------------------------ */
+/* 状态标签（layui 的 badge 只有几个固定色，这里补两个语义色）          */
+/* ------------------------------------------------------------------ */
+.admin-tag {
+  display: inline-block;
+  padding: 0 6px;
+  height: 20px;
+  line-height: 20px;
+  border-radius: 2px;
+  font-size: 12px;
+}
+
+.admin-tag-locked {
+  background: #f2f2f2;
+  color: #999;
+}
+
+.admin-tag-top {
+  background: #fff3e0;
+  color: #e6a23c;
+}
+
+.admin-tag-highlight {
+  background: #e8f5e9;
+  color: #3aa76d;
+}
+
+/* ------------------------------------------------------------------ */
+/* 子页面：提示页（partials/error.php，走 layui 原生外观）              */
+/* ------------------------------------------------------------------ */
+.admin-notice {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  /* 撑满弹层，否则内容太短，卡片下面会露出一大片灰底 */
+  min-height: 70vh;
+  padding: 40px 20px;
+  text-align: center;
+}
+
+.admin-notice-icon {
+  display: block;
+  margin-bottom: 16px;
+  font-size: 44px;
+  line-height: 1;
+  color: #FF5722;
+}
+
+.admin-notice-msg {
+  margin-bottom: 24px;
+  font-size: 15px;
+  color: #666;
+}
+
+/* ------------------------------------------------------------------ */
+/* 子页面：搜索区（layui + layuimini 的 table-search-fieldset）          */
+/* ------------------------------------------------------------------ */
+.table-search-fieldset .layui-form-item {
+  margin-bottom: 0;
+}
+
+.table-search-fieldset .layui-form-label {
+  width: 90px;
+  padding: 9px 10px;
+}
+
+.table-search-fieldset .layui-input-inline {
+  width: 160px;
+  margin-right: 12px;
+}
+
+/* 手机上搜索条件一行放不下，让它们自然换行 */
+@media (max-width: 768px) {
+  .table-search-fieldset .layui-input-inline,
+  .table-search-fieldset .layui-form-label {
+    width: auto;
+    max-width: 100%;
+  }
+
+  .table-search-fieldset .layui-inline {
+    display: block;
+    margin-bottom: 8px;
+  }
+}

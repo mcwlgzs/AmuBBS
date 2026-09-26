@@ -17,7 +17,7 @@ foreach ($tasks as $t) { if ($t['completed'] && !$t['claimed']) { $hasUnclaimed 
     <span>任务中心</span>
 </div>
 
-<div x-data="taskCenter()">
+<div>
 <!-- 进度概览 -->
 <div class="tc-header">
     <div class="tc-header-top">
@@ -26,9 +26,10 @@ foreach ($tasks as $t) { if ($t['completed'] && !$t['claimed']) { $hasUnclaimed 
             <div class="tc-header-sub">每日 00:00 重置，完成后请及时领取奖励</div>
         </div>
         <?php if ($hasUnclaimed): ?>
-        <button class="tc-claim-all-btn" :disabled="claimingAll" @click="claimAllTasks()">
-            <span x-show="!claimingAll">一键领取全部</span>
-            <span x-show="claimingAll">领取中...</span>
+        <button type="button" class="tc-claim-all-btn"
+                hx-post="/tasks/claim-all" hx-swap="none" hx-disabled-elt="this">
+            <span class="hx-idle">一键领取全部</span>
+            <span class="hx-busy">领取中...</span>
         </button>
         <?php endif; ?>
     </div>
@@ -72,9 +73,11 @@ foreach ($tasks as $t) { if ($t['completed'] && !$t['claimed']) { $hasUnclaimed 
                     已领取
                 </span>
             <?php elseif ($task['completed']): ?>
-                <button class="btn btn-primary btn-sm tc-claim-btn" :disabled="claiming === '<?= htmlspecialchars($task['key'], ENT_QUOTES) ?>'" @click="claimTask('<?= htmlspecialchars($task['key'], ENT_QUOTES) ?>')">
-                    <span x-show="claiming !== '<?= htmlspecialchars($task['key'], ENT_QUOTES) ?>'">领取奖励</span>
-                    <span x-show="claiming === '<?= htmlspecialchars($task['key'], ENT_QUOTES) ?>'">...</span>
+                <button type="button" class="btn btn-primary btn-sm tc-claim-btn"
+                        hx-post="/tasks/claim" hx-vals='{"task_key":"<?= htmlspecialchars($task['key'], ENT_QUOTES) ?>"}'
+                        hx-swap="none" hx-disabled-elt="this">
+                    <span class="hx-idle">领取奖励</span>
+                    <span class="hx-busy">...</span>
                 </button>
             <?php else: ?>
                 <span class="tc-pending-tag">未完成</span>
@@ -180,28 +183,5 @@ html.dark .tc-card-icon { background: rgba(59,130,246,.12); }
     .tc-card { padding: 12px; }
 }
 </style>
-
-<script>
-function taskCenter() {
-    return {
-        claiming: '',
-        claimingAll: false,
-        claimTask(key) {
-            this.claiming = key;
-            App.post('/tasks/claim', {task_key: key}, {silent:true}).then(d => {
-                if (d.success) { location.reload(); }
-                else { toast(d.message || '领取失败', 'error'); }
-            }).finally(() => this.claiming = '');
-        },
-        claimAllTasks() {
-            this.claimingAll = true;
-            App.post('/tasks/claim-all', {}, {silent:true}).then(d => {
-                if (d.success) { location.reload(); }
-                else { toast(d.message || '领取失败', 'error'); }
-            }).finally(() => this.claimingAll = false);
-        }
-    };
-}
-</script>
 
 <?php include APP_PATH . 'resources/views/layout/footer.php'; ?>

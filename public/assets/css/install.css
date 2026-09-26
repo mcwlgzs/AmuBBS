@@ -325,6 +325,18 @@ body {
     gap: 12px;
 }
 
+/* 右侧按钮组：环境检测那一步会并排出现「重新检测 + 下一步」 */
+.footer-actions {
+    display: flex;
+    gap: 12px;
+    margin-left: auto;
+}
+
+/* htmx 请求进行中：按钮里的转圈出现、文案隐藏（与全站 .hx-idle / .hx-busy 同一套约定） */
+.hx-busy { display: none; }
+.htmx-request .hx-idle { display: none; }
+.htmx-request .hx-busy { display: inline-block; }
+
 .btn {
     padding: 10px 24px;
     font-size: 14px;
@@ -533,6 +545,15 @@ body {
     }
 
     .install-footer .btn {
+        width: 100%;
+    }
+
+    .footer-actions {
+        flex-direction: column-reverse;
+        width: 100%;
+    }
+
+    .footer-actions .btn {
         width: 100%;
     }
 

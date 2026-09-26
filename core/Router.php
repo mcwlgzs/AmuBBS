@@ -186,8 +186,23 @@ class Router
     private function handleNotFound(): void
     {
         http_response_code(404);
+
+        // JSON 客户端（API 调用方）要 JSON，浏览器要主题化页面
+        $accept = strtolower((string)($_SERVER['HTTP_ACCEPT'] ?? ''));
+        if (str_contains($accept, 'application/json') && !str_contains($accept, 'text/html')) {
+            header('Content-Type: application/json; charset=utf-8');
+            echo json_encode(
+                ['code' => 1, 'msg' => '接口不存在', 'success' => false, 'message' => '接口不存在'],
+                JSON_UNESCAPED_UNICODE
+            );
+            return;
+        }
+
         $viewFile = APP_PATH . 'resources/views/404.php';
         if (file_exists($viewFile)) {
+            $errorCode = 404;
+            $errorTitle = '页面未找到';
+            $errorMessage = '你访问的页面不存在或已被移除。';
             require $viewFile;
         } else {
             echo '404 Not Found';

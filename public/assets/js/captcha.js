@@ -247,33 +247,3 @@ class CaptchaWidget {
     }
 }
 
-/**
- * Alpine.js 组件工厂 - 在表单中使用
- * 用法: x-data="captchaWidget('login')"
- */
-function captchaWidget(scene) {
-    return {
-        captchaId: '',
-        captchaAnswer: '',
-        captchaVerified: false,
-        _widget: null,
-        init() {
-            const container = this.$refs.captchaContainer;
-            if (!container) return;
-            this._widget = new CaptchaWidget(container, {
-                scene: scene,
-                onVerified: (ok, id, answer) => {
-                    this.captchaVerified = ok;
-                    this.captchaId = id;
-                    this.captchaAnswer = answer;
-                }
-            });
-        },
-        refreshCaptcha() {
-            if (this._widget) this._widget.load();
-        },
-        getCaptchaData() {
-            return { captcha_id: this.captchaId, captcha_answer: this.captchaAnswer };
-        }
-    };
-}

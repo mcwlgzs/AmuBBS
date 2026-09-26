@@ -104,9 +104,10 @@ vim .env
 
 ```env
 # 应用
-APP_MODE=distributed
 APP_DEBUG=false
 APP_URL=http://192.168.1.102
+# 「记住我」/后台 API Token 的签名密钥，两台机器必须相同
+APP_KEY=用 php -r "echo bin2hex(random_bytes(32));" 生成
 
 # 数据库 → 指向机器 A
 DB_HOST=192.168.1.101
@@ -128,8 +129,7 @@ SESSION_REDIS_DB=1
 # 缓存
 CACHE_DRIVER=redis
 
-# 文件上传（见第三节）
-UPLOAD_DRIVER=local
+# 上传：没有驱动开关，附件固定落 public/uploads/，多机靠共享挂载（见第三节）
 ```
 
 ### 2.4 设置目录权限
@@ -203,17 +203,14 @@ sudo mount -t nfs 192.168.1.101:/var/www/amubbs/public/uploads /var/www/amubbs/p
 echo '192.168.1.101:/var/www/amubbs/public/uploads /var/www/amubbs/public/uploads nfs defaults 0 0' | sudo tee -a /etc/fstab
 ```
 
-### 方案 B：OSS 对象存储（推荐生产环境）
+### 方案 B：主机面板 / NAS 共享目录
 
-修改机器 A 和 B 的 `.env`：
+如果你的主机面板或 NAS 能提供共享目录（SMB / 面板自带的「共享存储」），
+把它挂到两台机器的 `public/uploads/` 即可，效果与方案 A 相同，操作按面板文档来。
 
-```env
-UPLOAD_DRIVER=oss
-OSS_ENDPOINT=oss-cn-hangzhou.aliyuncs.com
-OSS_BUCKET=amubbs-uploads
-OSS_ACCESS_KEY=your_key
-OSS_SECRET_KEY=your_secret
-```
+> ⚠️ **对象存储（OSS / S3 等）当前未实现**：上传路径固定写本地 `public/uploads/`，
+> 代码里没有上传驱动开关（`.env` 也没有 `UPLOAD_DRIVER` / `OSS_*` 这些键）。
+> 要接对象存储得自己改 `AttachmentSvc` 与附件下载路由，属于二次开发范围。
 
 ---
 

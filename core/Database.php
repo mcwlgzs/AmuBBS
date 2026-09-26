@@ -18,6 +18,21 @@ class Database
     private static ?array $configCache = null;
 
     /**
+     * 数据库服务端版本（如 10.11.9-MariaDB），拿不到时返回空串
+     *
+     * 「连的这个库是什么版本」属于连接本身的信息，放在这里，调用方不必自己写 SHOW/VERSION()。
+     * 用独立 try 包住：系统信息页在库不可用时也要能渲染。
+     */
+    public static function serverVersion(): string
+    {
+        try {
+            return (string)(self::fetchOne("SELECT VERSION() as v")['v'] ?? '');
+        } catch (\Throwable $e) {
+            return '';
+        }
+    }
+
+    /**
      * 获取数据库配置（缓存，避免重复读文件）
      */
     private static function getConfig(): array
@@ -361,6 +376,25 @@ class Database
         return Cache::getStale($key, function () use ($sql, $params) {
             return self::fetchAll($sql, $params);
         }, $ttl) ?? [];
+    }
+
+    /**
+     * 让 fetchOneCached 的缓存失效
+     *
+     * key 推导与 fetchOneCached 写在同一处，避免调用方自己手抄
+     * 'dbq1:' . md5(...) 这种前缀——一旦抄错就会静默失效（读的是新数据、删的是别的 key）。
+     */
+    public static function forgetOneCached(string $sql, array $params = []): void
+    {
+        Cache::delete('dbq1:' . md5($sql . serialize($params)));
+    }
+
+    /**
+     * 让 fetchAllCached 的缓存失效（对应前缀为 dbqn）
+     */
+    public static function forgetAllCached(string $sql, array $params = []): void
+    {
+        Cache::delete('dbqn:' . md5($sql . serialize($params)));
     }
 
     /**

@@ -30,8 +30,8 @@
                 </a>
                 <?php include __DIR__ . '/../components/user-dropdown.php'; ?>
             <?php else: ?>
-                <a href="/login" class="nav-link-light" @click="if(window.innerWidth>=768){$event.preventDefault();$dispatch('auth-show','login')}">登录</a>
-                <a href="/register" class="nav-btn-post" @click="if(window.innerWidth>=768){$event.preventDefault();$dispatch('auth-show','register')}">注册</a>
+                <a href="/login" class="nav-link-light" data-auth-open="login">登录</a>
+                <a href="/register" class="nav-btn-post" data-auth-open="register">注册</a>
             <?php endif; ?>
         </div>
     </div>

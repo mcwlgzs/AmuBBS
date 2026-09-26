@@ -1,5 +1,11 @@
 /* AMuBBS - 主题样式 */
 
+/* hidden 属性必须压得过内联 display。
+   帖子页的 #moveModal / #rewardModal 都写了 style="...display:flex..."，
+   而内联样式优先级高于 UA 的 [hidden]{display:none}，于是「一打开帖子就弹出移动/打赏弹窗」。
+   这里用 !important 统一兜底，今后任何带 hidden 的浮层都不必再各自加规则。 */
+[hidden] { display: none !important; }
+
 :root {
     --primary: #3B82F6;
     --primary-hover: #2563EB;
@@ -70,7 +76,6 @@ button, input, select, textarea { font-family: inherit; font-size: inherit; }
 /* ========== 动画 ========== */
 @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
 @keyframes shimmer { 0% { background-position: -200% 0; } 100% { background-position: 200% 0; } }
-.animate-fadeIn { animation: fadeIn .2s ease both; }
 
 /* ========== 导航栏 ========== */
 .navbar {
@@ -215,31 +220,16 @@ button, input, select, textarea { font-family: inherit; font-size: inherit; }
 }
 .notif-popup-footer:hover { background: var(--primary-light); }
 
-/* 汉堡菜单 */
-.hamburger {
-    display: flex; align-items: center; justify-content: center;
-    width: 38px; height: 38px; border: none; background: none;
-    cursor: pointer; border-radius: var(--radius-lg); color: var(--gray-500);
-}
-.hamburger:hover { background: var(--gray-100); }
-.hamburger svg { width: 22px; height: 22px; }
-.show-mobile { display: flex; }
 .hide-mobile { display: none; }
 .show-desktop-only { display: block; }
-.show-mobile-only { display: none; }
-@media (max-width: 767px) { .show-desktop-only { display: none !important; } .show-mobile-only { display: block !important; } }
-@media (min-width: 768px) { .show-desktop-only { display: block !important; } .show-mobile-only { display: none !important; } }
 
-/* 手机菜单 */
-.mobile-menu { padding: 8px 16px 16px; border-top: 1px solid var(--border); background: #fff; }
-.mobile-search { margin-bottom: 8px; }
+@media (max-width: 767px) { .show-desktop-only { display: none !important; }
+ }
+@media (min-width: 768px) { .show-desktop-only { display: block !important; }
+ }
+
 .mobile-search .search-input { width: 100%; padding: 10px 14px; border-radius: var(--radius); background: var(--gray-50); border: 1px solid var(--border); }
-.mobile-menu-item {
-    display: flex; align-items: center; padding: 12px 14px;
-    color: var(--text); font-size: 14px; border-radius: var(--radius-lg);
-    transition: all var(--transition); font-weight: 500;
-}
-.mobile-menu-item:hover { background: var(--primary-light); color: var(--primary); }
+
 .mobile-menu-item .badge { position: static; margin-left: 8px; box-shadow: none; }
 
 /* ========== 按钮 ========== */
@@ -262,7 +252,7 @@ button, input, select, textarea { font-family: inherit; font-size: inherit; }
 .btn-secondary { background: var(--gray-100); color: var(--gray-700); border-color: var(--gray-200); }
 .btn-secondary:hover { background: var(--gray-200); }
 .btn-sm { padding: 5px 14px; font-size: 12px; }
-.btn-lg { padding: 12px 32px; font-size: 15px; }
+
 .btn-block { width: 100%; }
 
 /* ========== 卡片 ========== */
@@ -296,8 +286,8 @@ button, input, select, textarea { font-family: inherit; font-size: inherit; }
 
 /* ========== 标签 ========== */
 .tag { display: inline-flex; align-items: center; padding: 2px 10px; font-size: 11px; font-weight: 500; border-radius: var(--radius-full); }
-.tag-top { background: #fef3c7; color: #92400e; padding: 3px 6px; margin-left: 4px; border-radius: var(--radius); }
-.tag-highlight { background: rgba(59,130,246,.1); color: var(--primary); padding: 3px 6px; margin-left: 4px; border-radius: var(--radius); }
+.tag-top { background: #fef3c7; color: #92400e; padding: 2px 8px; margin-left: 4px; border-radius: var(--radius); font-weight: 600; white-space: nowrap; }
+.tag-highlight { background: rgba(59,130,246,.1); color: var(--primary); padding: 2px 8px; margin-left: 4px; border-radius: var(--radius); font-weight: 600; white-space: nowrap; }
 .tag-forum { background: var(--primary-light); color: var(--primary); }
 .tag-locked { background: var(--gray-100); color: var(--gray-600); }
 
@@ -313,11 +303,44 @@ button, input, select, textarea { font-family: inherit; font-size: inherit; }
 
 /* ========== 消息提示 ========== */
 .msg-error { color: var(--danger); font-size: 13px; margin-top: 4px; }
-.msg-success { color: var(--success); font-size: 13px; margin-top: 4px; }
+
 .alert { padding: 12px 16px; border-radius: var(--radius); font-size: 13px; margin-bottom: 12px; }
-.alert-error { background: #fef2f2; color: #991b1b; border: 1px solid #fecaca; }
-.alert-success { background: #f0fdf4; color: #166534; border: 1px solid #bbf7d0; }
+
 .alert-info { background: rgba(0,102,255,.04); color: #1e40af; border: 1px solid rgba(0,102,255,.15); }
+
+/* ========== htmx 表单提交中的按钮文案 ==========
+   htmx 会给发起请求的元素（表单）加 .htmx-request，
+   于是按钮里的「提交中...」文案不用任何 JS 就能切换。
+   页面侧只需写：<span class="hx-idle">发布</span><span class="hx-busy">发布中...</span> */
+.hx-busy { display: none; }
+.htmx-request .hx-idle { display: none; }
+.htmx-request .hx-busy { display: inline; }
+
+/* ========== 表情面板（[data-emoji-picker="#输入框"]）==========
+   面板由 app.js 按需创建，位置跟随触发按钮，所以这里只管外观。 */
+.amubbs-emoji-panel {
+    position: fixed;
+    z-index: 10001;
+    width: 296px;
+    max-height: 260px;
+    overflow-y: auto;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 2px;
+    padding: 8px;
+    background: var(--bg, #fff);
+    border: 1px solid var(--border-light, #e2e8f0);
+    border-radius: 8px;
+    box-shadow: 0 4px 12px rgba(0,0,0,.12);
+    scrollbar-width: none;
+    -ms-overflow-style: none;
+}
+.amubbs-emoji-panel::-webkit-scrollbar { display: none; }
+.amubbs-emoji-backdrop { position: fixed; inset: 0; z-index: 10000; }
+
+/* 勾选式批量操作栏：默认隐藏（没勾选就整条不显示），显示时是横向排列 */
+[data-check-toolbar] { display: flex; }
+[data-check-toolbar][hidden] { display: none !important; }
 
 /* ========== 区块标题 ========== */
 .section-title {
@@ -395,15 +418,6 @@ button, input, select, textarea { font-family: inherit; font-size: inherit; }
 .pagination-full .page-current { background: var(--primary); color: #fff; font-weight: 600; border: none; }
 .pagination-full .page-dots { color: var(--text-muted); border: none; background: none; }
 
-/* ========== 骨架屏 ========== */
-.skeleton {
-    background: linear-gradient(90deg, var(--gray-100) 25%, var(--gray-50) 50%, var(--gray-100) 75%);
-    background-size: 200% 100%; animation: shimmer 1.5s infinite; border-radius: var(--radius);
-}
-.skeleton-text { height: 14px; margin-bottom: 8px; }
-.skeleton-text:last-child { width: 60%; }
-.skeleton-title { height: 18px; width: 70%; margin-bottom: 12px; }
-.skeleton-avatar { width: 32px; height: 32px; border-radius: var(--radius-full); }
 @keyframes skeleton-loading { 0% { background-position: 200% 0; } 100% { background-position: -200% 0; } }
 
 /* ========== 标签可点击 ========== */
@@ -412,23 +426,13 @@ button, input, select, textarea { font-family: inherit; font-size: inherit; }
 
 /* ========== 工具类 ========== */
 .text-center { text-align: center; }
-.text-right { text-align: right; }
+
 .text-muted { color: var(--text-muted); }
 .text-secondary { color: var(--text-secondary); }
 .text-danger { color: var(--danger); }
 .text-success { color: var(--success); }
 .text-primary { color: var(--primary); }
-.mt-8 { margin-top: 8px; }
-.mt-16 { margin-top: 16px; }
-.mb-8 { margin-bottom: 8px; }
-.mb-16 { margin-bottom: 16px; }
-.gap-8 { gap: 8px; }
-.gap-16 { gap: 16px; }
-.flex { display: flex; }
-.flex-col { flex-direction: column; }
-.items-center { align-items: center; }
-.justify-between { justify-content: space-between; }
-.flex-1 { flex: 1; }
+
 .flex-wrap { flex-wrap: wrap; }
 .hidden { display: none !important; }
 
@@ -494,12 +498,28 @@ button, input, select, textarea { font-family: inherit; font-size: inherit; }
 .code-copy-btn:hover { background: rgba(255,255,255,.2); color: #fff; }
 
 /* ========== 登录/注册弹窗 ========== */
+/* 下拉菜单/弹窗的显隐统一用 hidden 属性控制（替代 Alpine 的 x-show） */
+[data-dropdown-menu][hidden] { display: none !important; }
+/* 暗色模式图标：由 html.dark 决定显示哪个，不再依赖 Alpine 的 x-show */
+.theme-toggle .icon-sun { display: none; }
+html.dark .theme-toggle .icon-moon { display: none; }
+html.dark .theme-toggle .icon-sun { display: block; }
+.theme-toggle, .back-to-top { cursor: pointer; }
+
 .auth-overlay {
     position: fixed; inset: 0; background: rgba(255,255,255,.6);
     backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px);
     display: flex; align-items: center; justify-content: center;
     padding: 16px;
 }
+/* 显隐用 hidden 属性控制；上面是 display:flex，必须显式压过去 */
+.auth-overlay[hidden] { display: none !important; }
+/* 表单被 htmx 取回塞进弹窗时，卡片外壳已由 .auth-modal 提供，这里只留内容 */
+.auth-card-embed { box-shadow: none !important; border: none !important; background: transparent !important; padding: 0 !important; }
+/* 密码显示/隐藏图标：用 aria-pressed 切换，不再依赖 Alpine 的 x-show */
+.pwd-eye-btn .pwd-eye-off { display: none; }
+.pwd-eye-btn[aria-pressed="true"] .pwd-eye-on { display: none; }
+.pwd-eye-btn[aria-pressed="true"] .pwd-eye-off { display: block; }
 .auth-modal {
     position: relative; width: 100%; max-width: 420px;
     background: var(--bg-card);
@@ -512,12 +532,7 @@ button, input, select, textarea { font-family: inherit; font-size: inherit; }
 .auth-modal:hover {
     box-shadow: 0 12px 40px rgba(0,0,0,.08), 0 4px 12px rgba(0,0,0,.05);
 }
-.auth-enter { transition: all .35s cubic-bezier(.16,1,.3,1); }
-.auth-enter-from { opacity: 0; transform: scale(.92) translateY(16px); }
-.auth-enter-to { opacity: 1; transform: scale(1) translateY(0); }
-.auth-leave { transition: all .2s ease; }
-.auth-leave-from { opacity: 1; transform: scale(1); }
-.auth-leave-to { opacity: 0; transform: scale(.95) translateY(8px); }
+
 .auth-modal-close {
     position: absolute; top: 14px; right: 14px;
     background: none; border: none; color: var(--gray-400);
@@ -550,54 +565,14 @@ button, input, select, textarea { font-family: inherit; font-size: inherit; }
 .auth-divider::before, .auth-divider::after {
     content: ''; flex: 1; height: 1px; background: var(--border-light);
 }
-/* 表单输入 */
-.auth-form { display: flex; flex-direction: column; gap: 12px; }
-.auth-input-group {
-    position: relative; display: flex; align-items: center;
-    border: 1px solid var(--border); border-radius: 10px;
-    background: var(--gray-50); transition: all .2s;
-}
-.auth-input-group:focus-within { border-color: var(--primary); background: #fff; box-shadow: 0 0 0 3px rgba(59,130,246,.1); }
+
 .auth-input-group.has-error { border-color: var(--danger); }
 .auth-input-group.has-error:focus-within { box-shadow: 0 0 0 3px rgba(239,68,68,.1); }
-.auth-input-icon {
-    position: absolute; left: 14px; width: 18px; height: 18px;
-    color: var(--gray-400); pointer-events: none; flex-shrink: 0;
-}
-.auth-input-group:focus-within .auth-input-icon { color: var(--primary); }
+
 .auth-input-group.has-error .auth-input-icon { color: var(--danger); }
-.auth-input-group input {
-    width: 100%; padding: 12px 14px 12px 42px; border: none; background: none;
-    font-size: 14px; color: var(--text); outline: none; border-radius: var(--radius-lg);
-}
-.auth-input-group input::placeholder { color: var(--gray-400); }
-.auth-pwd-toggle {
-    position: absolute; right: 10px; background: none; border: none;
-    color: var(--gray-400); cursor: pointer; padding: 4px;
-    display: flex; align-items: center; transition: color var(--transition);
-}
-.auth-pwd-toggle:hover { color: var(--text-secondary); }
-.auth-field-error { font-size: 12px; color: var(--danger); padding: 0 4px; margin-top: -4px; }
-.auth-msg { text-align: center; font-size: 13px; padding: 4px 0; }
-.auth-msg-error { color: var(--danger); }
-.auth-msg-success { color: var(--success); }
-.auth-submit-btn {
-    width: 100%; padding: 11px; font-size: 14px; font-weight: 600;
-    background: var(--primary); color: #fff; border: none; border-radius: 10px;
-    cursor: pointer; transition: all .2s; margin-top: 4px;
-    display: flex; align-items: center; justify-content: center; min-height: 44px;
-}
-.auth-submit-btn:hover { background: var(--primary-hover); box-shadow: 0 4px 12px rgba(59,130,246,.25); }
-.auth-submit-btn:active { transform: scale(.98); }
-.auth-submit-btn:disabled { opacity: .6; cursor: not-allowed; }
-.auth-spinner {
-    width: 20px; height: 20px; border: 2px solid rgba(255,255,255,.3);
-    border-top-color: #fff; border-radius: 50%; animation: authSpin .6s linear infinite;
-}
+
 @keyframes authSpin { to { transform: rotate(360deg); } }
-.auth-modal-footer { text-align: center; margin-top: 20px; font-size: 13px; color: var(--text-muted); }
-.auth-modal-footer a { color: var(--primary); font-weight: 500; margin-left: 2px; }
-.auth-modal-footer a:hover { text-decoration: underline; }
+
 @media (max-width: 767px) {
     .auth-overlay { display: none !important; } /* 移动端跳转独立页面，不显示弹窗 */
 }
@@ -708,9 +683,6 @@ html.dark .search-input:focus { background: var(--bg-card); }
 /* ========== 导航链接卡片 ========== */
 .nav-link-card:hover { border-color: var(--primary); background: var(--primary-light); }
 
-/* ========== 任务项 ========== */
-.task-item:hover { border-color: var(--primary); background: var(--primary-50); }
-
 /* ========== 响应式 ========== */
 
 /* 小手机 ≤ 374px */
@@ -752,8 +724,7 @@ html.dark .search-input:focus { background: var(--bg-card); }
     .navbar-right { gap: 2px; }
     .dropdown-toggle { padding: 3px 6px; gap: 6px; }
     .dropdown-toggle .avatar-xs { width: 22px; height: 22px; }
-    .mobile-menu { padding: 6px 12px 12px; }
-    .mobile-menu-item { padding: 12px 12px; font-size: 14px; min-height: 44px; } /* 触控目标 ≥ 44px */
+ /* 触控目标 ≥ 44px */
     .mobile-search .search-input { padding: 10px 14px; font-size: 14px; min-height: 44px; }
     /* 通知弹窗 */
     .notif-popup { width: 280px; right: -20px; }
@@ -785,9 +756,9 @@ html.dark .search-input:focus { background: var(--bg-card); }
 /* 平板 768px+ */
 @media (min-width: 768px) {
     .navbar-search { display: block; }
-    .show-mobile { display: none !important; }
+
     .hide-mobile { display: inline-flex !important; }
-    .mobile-menu { display: none !important; }
+
     .mobile-bottom-nav { display: none !important; }
     .container { padding: 0 28px; }
 }

@@ -5,8 +5,11 @@
 
 namespace App\Services;
 
-use Core\Database;
 use Core\Cache;
+
+use App\Models\ForumAccess;
+use App\Models\User;
+use App\Models\UserGroup;
 
 class PermissionSvc
 {
@@ -142,8 +145,7 @@ class PermissionSvc
             return self::$groupIdCache[$userId];
         }
         // 短 TTL 缓存 group_id，兼顾性能和管理员修改后的及时生效
-        $user = Database::fetchOneCached("SELECT group_id FROM users WHERE id = ? AND deleted_at IS NULL", [$userId], 60);
-        $result = $user ? (int)$user['group_id'] : null;
+        $result = User::getGroupIdCached($userId);
         self::$groupIdCache[$userId] = $result;
         return $result;
     }
@@ -153,9 +155,7 @@ class PermissionSvc
      */
     private static function getGroupPermissions(int $groupId): ?array
     {
-        return Cache::get("group_perms:{$groupId}", function () use ($groupId) {
-            return Database::fetchOne("SELECT * FROM user_groups WHERE id = ?", [$groupId]);
-        }, 600);
+        return UserGroup::findFullCached($groupId);
     }
 
     /**
@@ -163,12 +163,7 @@ class PermissionSvc
      */
     private static function getForumAccess(int $forumId, int $groupId): ?array
     {
-        return Cache::get("forum_access:{$forumId}:{$groupId}", function () use ($forumId, $groupId) {
-            return Database::fetchOne(
-                "SELECT * FROM forum_access WHERE forum_id = ? AND group_id = ?",
-                [$forumId, $groupId]
-            );
-        }, 600);
+        return ForumAccess::forGroupCached($forumId, $groupId);
     }
 
     /**

@@ -39,7 +39,8 @@ CREATE TABLE `users` (
   KEY `idx_users_created_deleted` (`deleted_at`, `created_at`),
   KEY `idx_users_credits_rank` (`deleted_at`, `credits` DESC),
   UNIQUE KEY `uk_users_api_token` (`api_token`),
-  KEY `idx_users_remember_token` (`remember_token`)
+  KEY `idx_users_remember_token` (`remember_token`),
+  KEY `idx_users_active_login` (`deleted_at`, `login_at` DESC)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='用户表';
 
 -- ----------------------------
@@ -168,7 +169,8 @@ CREATE TABLE `threads` (
   KEY `idx_threads_forum_latest` (`forum_id`, `deleted_at`, `id` DESC),
   KEY `idx_threads_highlight` (`deleted_at`, `is_highlight`),
   KEY `idx_threads_top` (`is_top`, `deleted_at`, `updated_at` DESC),
-  FULLTEXT KEY `ft_threads_title_content` (`title`, `content`)
+  KEY `idx_threads_all_list` (`deleted_at`, `is_top` DESC, `created_at` DESC),
+  KEY `idx_threads_all_hot` (`deleted_at`, `is_top` DESC, `reply_count` DESC, `views` DESC)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='帖子表';
 
 -- ----------------------------
@@ -194,7 +196,7 @@ CREATE TABLE `posts` (
   KEY `idx_posts_thread_deleted_floor` (`thread_id`, `deleted_at`, `floor`),
   KEY `idx_posts_user_deleted_created` (`user_id`, `deleted_at`, `created_at` DESC),
   KEY `idx_posts_created_deleted` (`deleted_at`, `created_at`),
-  FULLTEXT KEY `ft_posts_content` (`content`)
+  KEY `idx_posts_thread_deleted_created` (`thread_id`, `deleted_at`, `created_at`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='回复表';
 
 -- ----------------------------
@@ -203,8 +205,8 @@ CREATE TABLE `posts` (
 DROP TABLE IF EXISTS `announcements`;
 CREATE TABLE `announcements` (
   `id` INT UNSIGNED NOT NULL AUTO_INCREMENT COMMENT '公告ID',
-  `title` VARCHAR(200) NOT NULL COMMENT '公告标题',
-  `content` TEXT COMMENT '公告内容（可选）',
+  `title` VARCHAR(200) NOT NULL COMMENT '公告标题（后台不再填写，由内容首行自动派生）',
+  `content` TEXT COMMENT '公告内容（后台必填，前台公告栏展示）',
   `url` VARCHAR(500) DEFAULT '' COMMENT '跳转链接（可选）',
   `type` TINYINT UNSIGNED NOT NULL DEFAULT 0 COMMENT '类型：0普通 1重要 2紧急',
   `is_enabled` TINYINT(1) NOT NULL DEFAULT 1 COMMENT '是否启用',
@@ -256,26 +258,6 @@ INSERT INTO `settings` (`key`, `value`, `description`, `updated_at`) VALUES
 ('ip_limit_upload', '30', '每日同IP上传上限（0不限制）', UNIX_TIMESTAMP());
 
 -- ----------------------------
--- 会话表
--- ----------------------------
-DROP TABLE IF EXISTS `sessions`;
-CREATE TABLE `sessions` (
-  `id` CHAR(40) NOT NULL COMMENT 'Session ID',
-  `user_id` INT UNSIGNED DEFAULT 0 COMMENT '用户ID（0为游客）',
-  `ip` VARCHAR(45) NOT NULL COMMENT 'IP地址',
-  `user_agent` VARCHAR(255) DEFAULT '' COMMENT 'User Agent',
-  `data` TEXT COMMENT 'Session数据',
-  `last_activity` INT UNSIGNED NOT NULL COMMENT '最后活动时间',
-  `current_forum_id` INT UNSIGNED DEFAULT 0 COMMENT '当前浏览板块ID',
-  `current_url` VARCHAR(255) DEFAULT '' COMMENT '当前页面URL',
-  PRIMARY KEY (`id`),
-  KEY `idx_sessions_user_id` (`user_id`),
-  KEY `idx_sessions_last_activity` (`last_activity`),
-  KEY `idx_sessions_forum` (`current_forum_id`, `last_activity`),
-  KEY `idx_sessions_online` (`user_id`, `last_activity`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='会话表';
-
--- ----------------------------
 -- 集群节点表（分布式部署用）
 -- ----------------------------
 DROP TABLE IF EXISTS `cluster_nodes`;
@@ -305,7 +287,7 @@ CREATE TABLE `notifications` (
   `type` VARCHAR(32) NOT NULL COMMENT '通知类型（reply/mention/system）',
   `title` VARCHAR(255) NOT NULL COMMENT '通知标题',
   `content` TEXT COMMENT '通知内容',
-  `target_type` VARCHAR(32) DEFAULT '' COMMENT '关联对象类型（thread/post）',
+  `target_type` VARCHAR(32) DEFAULT '' COMMENT '关联对象类型（thread/post）；管理端群发时写发送范围 all/user/group',
   `target_id` INT UNSIGNED DEFAULT 0 COMMENT '关联对象ID',
   `is_read` TINYINT(1) NOT NULL DEFAULT 0 COMMENT '是否已读',
   `created_at` INT UNSIGNED NOT NULL COMMENT '创建时间',
@@ -470,6 +452,7 @@ CREATE TABLE `queue_jobs` (
   `available_at` INT UNSIGNED NOT NULL COMMENT '可执行时间',
   `reserved_at` INT UNSIGNED DEFAULT NULL COMMENT '被取出时间',
   `reserve_token` VARCHAR(16) DEFAULT NULL COMMENT '抢占令牌',
+  `attempts` INT UNSIGNED NOT NULL DEFAULT 0 COMMENT '已失败重试次数',
   `created_at` INT UNSIGNED NOT NULL,
   PRIMARY KEY (`id`),
   KEY `idx_qj_queue_reserved` (`queue`, `reserved_at`, `available_at`),
@@ -752,12 +735,14 @@ CREATE TABLE `moment_comments` (
   `id` INT UNSIGNED NOT NULL AUTO_INCREMENT COMMENT '评论ID',
   `moment_id` INT UNSIGNED NOT NULL COMMENT '动态ID',
   `user_id` INT UNSIGNED NOT NULL COMMENT '用户ID',
-  `reply_user_id` INT UNSIGNED DEFAULT 0 COMMENT '回复用户ID',
+  `reply_user_id` INT UNSIGNED DEFAULT 0 COMMENT '回复用户ID（仅用于显示「回复 @某人」）',
+  `parent_id` INT UNSIGNED NOT NULL DEFAULT 0 COMMENT '所属顶层评论ID（0=顶层评论；回复子评论时归一到同一父评论，仅一层嵌套）',
   `content` TEXT NOT NULL COMMENT '评论内容',
   `created_at` INT UNSIGNED NOT NULL COMMENT '评论时间',
   `deleted_at` INT UNSIGNED DEFAULT NULL COMMENT '删除时间',
   PRIMARY KEY (`id`),
   KEY `idx_mc_moment_deleted_created` (`moment_id`, `deleted_at`, `created_at`),
+  KEY `idx_mc_moment_parent_created` (`moment_id`, `parent_id`, `created_at`),
   KEY `idx_mc_user_id` (`user_id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='动态评论表';
 
@@ -806,6 +791,26 @@ CREATE TABLE `user_vip` (
   UNIQUE KEY `uk_user_vip` (`user_id`),
   KEY `idx_expire` (`expire_at`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='VIP会员表';
+
+-- ----------------------------
+-- 第三方登录关联表
+--
+-- 补建：这张表原先只出现在 SocialLoginService 的 SQL 里，
+-- 安装脚本从未建它 —— 任何一次社交登录都会直接抛 1146。
+-- ----------------------------
+DROP TABLE IF EXISTS `social_logins`;
+CREATE TABLE `social_logins` (
+  `id` INT UNSIGNED NOT NULL AUTO_INCREMENT COMMENT '关联ID',
+  `user_id` INT UNSIGNED NOT NULL COMMENT '本地用户ID',
+  `provider` VARCHAR(32) NOT NULL COMMENT '平台标识（wechat/qq/weibo/github 等）',
+  `open_id` VARCHAR(191) NOT NULL COMMENT '平台内用户唯一标识',
+  `nickname` VARCHAR(100) DEFAULT '' COMMENT '平台昵称',
+  `avatar` VARCHAR(500) DEFAULT '' COMMENT '平台头像',
+  `created_at` INT UNSIGNED NOT NULL COMMENT '首次关联时间',
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_social_provider_openid` (`provider`, `open_id`),
+  KEY `idx_social_user` (`user_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='第三方登录关联表';
 
 -- ----------------------------
 -- 导航分类表

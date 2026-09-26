@@ -1,9 +1,22 @@
+<?php
+/**
+ * 通用错误页（404 / 403 / 其他）
+ *
+ * 变量（都可选，缺省即 404 文案）：
+ *   $errorCode    - HTTP 状态码
+ *   $errorTitle   - 标题
+ *   $errorMessage - 说明文字
+ */
+$_errorCode    = (int)($errorCode ?? 404);
+$_errorTitle   = $errorTitle ?? '页面未找到';
+$_errorMessage = $errorMessage ?? '你访问的页面不存在或已被移除。';
+?>
 <!DOCTYPE html>
 <html lang="zh-CN">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>页面未找到</title>
+    <title><?= htmlspecialchars($_errorTitle, ENT_QUOTES, 'UTF-8') ?></title>
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body {
@@ -56,9 +69,9 @@
 </head>
 <body>
     <div class="error-box">
-        <div class="error-code">404</div>
-        <h1 class="error-title">页面未找到</h1>
-        <p class="error-msg">你访问的页面不存在或已被移除。</p>
+        <div class="error-code"><?= $_errorCode ?></div>
+        <h1 class="error-title"><?= htmlspecialchars($_errorTitle, ENT_QUOTES, 'UTF-8') ?></h1>
+        <p class="error-msg"><?= htmlspecialchars($_errorMessage, ENT_QUOTES, 'UTF-8') ?></p>
         <a href="/" class="error-home">返回首页</a>
     </div>
 </body>

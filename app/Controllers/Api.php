@@ -5,12 +5,15 @@
 
 namespace App\Controllers;
 
+use App\Services\SearchSvc;
 use App\Services\UserSvc;
 use App\Services\ThreadSvc;
-use App\Services\NotificationSvc;
+use App\Models\Forum;
+use App\Models\Notification;
+use App\Models\Thread;
+use App\Models\User;
 use Core\Event;
 use App\Events\Events;
-use Core\Database;
 use Core\Cache;
 
 class Api extends ApiBase
@@ -45,9 +48,7 @@ class Api extends ApiBase
         // 生成 Token
         $token = $this->generateToken();
         $tokenHash = hash('sha256', $token);
-        Database::execute("UPDATE users SET api_token = ?, login_ip = ?, login_at = ? WHERE id = ?", [
-            $tokenHash, $_SERVER['REMOTE_ADDR'] ?? '', time(), $user['id']
-        ]);
+        User::setApiToken((int)$user['id'], $tokenHash, $_SERVER['REMOTE_ADDR'] ?? '', time());
 
         $this->apiSuccess([
             'token' => $token,
@@ -92,7 +93,7 @@ class Api extends ApiBase
         // 生成 Token
         $token = $this->generateToken();
         $tokenHash = hash('sha256', $token);
-        Database::execute("UPDATE users SET api_token = ? WHERE id = ?", [$tokenHash, $userId]);
+        User::setApiToken($userId, $tokenHash);
 
         // 触发用户注册事件（供 AutoAvatar 等插件使用）
         Event::dispatch(Events::USER_REGISTERED, [
@@ -113,7 +114,7 @@ class Api extends ApiBase
     public function authLogout(): void
     {
         $this->authenticate();
-        Database::execute("UPDATE users SET api_token = NULL WHERE id = ?", [$this->authUser['id']]);
+        User::setApiToken((int)$this->authUser['id'], null);
         $this->apiSuccess(null, '已登出');
     }
 
@@ -157,10 +158,8 @@ class Api extends ApiBase
      */
     public function forumList(): void
     {
-        $forums = Cache::get('api:forums:list', function () {
-            return Database::fetchAll(
-                "SELECT id, parent_id, name, description, icon, thread_count, post_count FROM forums WHERE deleted_at IS NULL ORDER BY parent_id ASC, `rank` DESC"
-            );
+        $forums = Cache::get('api:forums:list', static function () {
+            return Forum::apiList();
         }, 300);
 
         $this->apiSuccess($forums);
@@ -171,13 +170,15 @@ class Api extends ApiBase
      */
     public function forumShow(string $id): void
     {
-        $forum = Database::fetchOne(
-            "SELECT id, parent_id, name, description, icon, thread_count, post_count FROM forums WHERE id = ? AND deleted_at IS NULL",
-            [(int)$id]
-        );
+        $forum = Forum::apiDetail((int)$id);
 
         if (!$forum) {
             $this->apiError('板块不存在', 404);
+            return;
+        }
+
+        if (!\App\Services\ForumSvc::canRead((int)$id, $this->viewerId())) {
+            $this->apiError('您所在的用户组无权浏览此板块', 403);
             return;
         }
 
@@ -198,9 +199,14 @@ class Api extends ApiBase
         $threadSvc = new ThreadSvc();
 
         if ($forumId > 0) {
+            $viewerId = $this->viewerId();
+            if (!\App\Services\ForumSvc::canRead($forumId, $viewerId)) {
+                $this->apiError('您所在的用户组无权浏览此板块', 403);
+                return;
+            }
             $result = $threadSvc->getThreadsByForum($forumId, $page, $perPage);
             $this->apiSuccess([
-                'items' => $result['threads'],
+                'items' => $this->onlyVisible($result['threads']),
                 'total' => $result['total'],
                 'page' => $result['page'],
                 'per_page' => $perPage,
@@ -210,18 +216,10 @@ class Api extends ApiBase
             // 全站帖子列表
             $page = min($page, 500);
             $offset = ($page - 1) * $perPage;
-            $total = (int)(Database::fetchOne("SELECT COUNT(*) as cnt FROM threads WHERE deleted_at IS NULL")['cnt'] ?? 0);
-            $threads = Database::fetchAll("
-                SELECT t.id, t.forum_id, t.user_id, t.username, t.title, t.views, t.reply_count,
-                       t.is_top, t.is_highlight, t.created_at, t.last_post_time,
-                       f.name as forum_name
-                FROM threads t LEFT JOIN forums f ON t.forum_id = f.id
-                WHERE t.deleted_at IS NULL
-                ORDER BY t.is_top DESC, t.last_post_time DESC
-                LIMIT ? OFFSET ?
-            ", [$perPage, $offset]);
+            $total = Thread::countActive();
+            $threads = Thread::apiListAll($perPage, $offset);
             $this->apiSuccess([
-                'items' => $threads,
+                'items' => $this->onlyVisible($threads),
                 'total' => (int)$total,
                 'page' => $page,
                 'per_page' => $perPage,
@@ -243,8 +241,71 @@ class Api extends ApiBase
             return;
         }
 
+        $viewerId = $this->viewerId();
+
+        // 板块浏览权限（与帖子详情页同一条判据）
+        if (!\App\Services\ForumSvc::canRead((int)($thread['forum_id'] ?? 0), $viewerId)) {
+            $this->apiError('您所在的用户组无权浏览此板块', 403);
+            return;
+        }
+
         $threadSvc->incrementViews((int)$id);
-        $this->apiSuccess($thread);
+        $this->apiSuccess(self::prepareThreadRow($thread, (int)$id, $viewerId));
+    }
+
+    /**
+     * 当前访客 ID（可选认证：Bearer Token 优先，其次会话 Cookie）
+     */
+    private ?int $viewerIdCache = null;
+    private bool $viewerIdResolved = false;
+
+    private function viewerId(): ?int
+    {
+        if (!$this->viewerIdResolved) {
+            $this->optionalAuth();
+            $id = (int)($this->authUser['id'] ?? $_SESSION['user_id'] ?? 0);
+            $this->viewerIdCache = $id > 0 ? $id : null;
+            $this->viewerIdResolved = true;
+        }
+
+        return $this->viewerIdCache;
+    }
+
+    /**
+     * 剔除当前访客无权浏览的行（板块 read 权限）
+     *
+     * @param array<int,array> $items
+     * @return array<int,array>
+     */
+    private function onlyVisible(array $items): array
+    {
+        $viewerId = $this->viewerId();
+
+        return array_values(array_filter($items, static function ($row) use ($viewerId): bool {
+            return is_array($row)
+                && \App\Services\ForumSvc::canRead((int)($row['forum_id'] ?? 0), $viewerId);
+        }));
+    }
+
+    /**
+     * 帖子行的公开化处理：脱敏 + 付费/隐藏内容解析
+     *
+     * 原来 REST API 直接把 ThreadSvc::getThreadDetail() 的原始结果返回给任何人，
+     * 于是匿名请求就能读到 [hide] / 付费可见的正文，以及作者 user_ip 等字段；
+     * 网页版唯一的付费墙调用点在 resources/views/thread/detail.php。
+     */
+    private static function prepareThreadRow(array $thread, int $threadId, ?int $viewerId): array
+    {
+        foreach (['user_ip', 'reg_ip', 'email', 'password', 'remember_token', 'api_token'] as $field) {
+            unset($thread[$field]);
+        }
+
+        $rendered = \Core\Markdown::render($thread['content_fmt'] ?? null, $thread['content'] ?? '');
+        if ($rendered !== '') {
+            $thread['content_fmt'] = \App\Services\ContentHideSvc::parse($rendered, $threadId, $viewerId);
+        }
+
+        return $thread;
     }
 
     /**
@@ -289,11 +350,32 @@ class Api extends ApiBase
         $page = max(1, (int)($_GET['page'] ?? 1));
         $perPage = min(50, max(1, (int)($_GET['per_page'] ?? 20)));
 
+        // 先确认帖子存在且当前访客有权浏览它的板块（以前这里完全无鉴权）
+        $thread = \App\Models\Thread::getLockState((int)$threadId);
+        if (!$thread) {
+            $this->apiError('帖子不存在', 404);
+            return;
+        }
+        $viewerId = $this->viewerId();
+        if (!\App\Services\ForumSvc::canRead((int)($thread['forum_id'] ?? 0), $viewerId)) {
+            $this->apiError('您所在的用户组无权浏览此板块', 403);
+            return;
+        }
+
         $threadSvc = new ThreadSvc();
         $result = $threadSvc->getPosts((int)$threadId, $page, $perPage);
 
+        $posts = [];
+        foreach ($result['posts'] as $post) {
+            if (is_array($post) && array_key_exists('content_fmt', $post)) {
+                $rendered = \Core\Markdown::render($post['content_fmt'] ?? null, $post['content'] ?? '');
+                $post['content_fmt'] = \App\Services\ContentHideSvc::parse($rendered, (int)$threadId, $viewerId);
+            }
+            $posts[] = $post;
+        }
+
         $this->apiSuccess([
-            'items' => $result['posts'],
+            'items' => $posts,
             'total' => $result['total'],
             'page' => $result['page'],
             'per_page' => $perPage,
@@ -315,11 +397,8 @@ class Api extends ApiBase
             return;
         }
 
-        // 检查帖子是否存在及是否锁定
-        $thread = Database::fetchOne(
-            "SELECT id, forum_id, is_locked FROM threads WHERE id = ? AND deleted_at IS NULL",
-            [(int)$threadId]
-        );
+        // 检查帖子是否存在及是否锁定（走新鲜读取，不吃行缓存）
+        $thread = Thread::getLockState((int)$threadId);
         if (!$thread) {
             $this->apiError('帖子不存在', 404);
             return;
@@ -355,7 +434,6 @@ class Api extends ApiBase
         $type = $_GET['type'] ?? 'thread';
         $page = max(1, min(500, (int)($_GET['page'] ?? 1)));
         $perPage = 20;
-        $offset = ($page - 1) * $perPage;
 
         if ($q === '') {
             $this->apiError('请输入搜索关键词');
@@ -367,60 +445,14 @@ class Api extends ApiBase
             $q = mb_substr($q, 0, 100);
         }
 
-        $items = [];
-        $total = 0;
+        // FULLTEXT / LIKE 的选择与回退、关键词清洗都在 SearchSvc（与站内搜索同一份实现）
+        $found = SearchSvc::byType($type, $q, $page, $perPage, true);
+        $items = is_array($found['items']) ? $found['items'] : [];
+        $total = $found['total'];
 
-        // 构造 BOOLEAN MODE 搜索词：过滤特殊字符，按空格拆分加 + 前缀
-        $words = preg_split('/\s+/', preg_replace('/[+\-><()~*"@]+/', ' ', $q), -1, PREG_SPLIT_NO_EMPTY);
-        $booleanQuery = $words ? implode(' ', array_map(fn($w) => '+' . $w . '*', array_slice($words, 0, 10))) : null;
-        $escapedQ = addcslashes($q, '%_\\');
-
-        if ($type === 'post') {
-            if ($booleanQuery !== null) {
-                try {
-                    $total = Database::fetchOne("SELECT COUNT(*) as cnt FROM posts WHERE deleted_at IS NULL AND MATCH(content) AGAINST(? IN BOOLEAN MODE)", [$booleanQuery])['cnt'] ?? 0;
-                    $items = Database::fetchAll("
-                        SELECT p.id, p.thread_id, p.username, p.content, p.created_at, t.title as thread_title
-                        FROM posts p LEFT JOIN threads t ON p.thread_id = t.id
-                        WHERE p.deleted_at IS NULL AND MATCH(p.content) AGAINST(? IN BOOLEAN MODE)
-                        ORDER BY p.created_at DESC LIMIT ? OFFSET ?
-                    ", [$booleanQuery, $perPage, $offset]);
-                } catch (\Throwable $e) {
-                    $booleanQuery = null; // 回退到 LIKE
-                }
-            }
-            if ($booleanQuery === null) {
-                $total = Database::fetchOne("SELECT COUNT(*) as cnt FROM posts WHERE deleted_at IS NULL AND content LIKE ?", ["%{$escapedQ}%"])['cnt'] ?? 0;
-                $items = Database::fetchAll("
-                    SELECT p.id, p.thread_id, p.username, p.content, p.created_at, t.title as thread_title
-                    FROM posts p LEFT JOIN threads t ON p.thread_id = t.id
-                    WHERE p.deleted_at IS NULL AND p.content LIKE ?
-                    ORDER BY p.created_at DESC LIMIT ? OFFSET ?
-                ", ["%{$escapedQ}%", $perPage, $offset]);
-            }
-        } else {
-            if ($booleanQuery !== null) {
-                try {
-                    $total = Database::fetchOne("SELECT COUNT(*) as cnt FROM threads WHERE deleted_at IS NULL AND MATCH(title, content) AGAINST(? IN BOOLEAN MODE)", [$booleanQuery])['cnt'] ?? 0;
-                    $items = Database::fetchAll("
-                        SELECT t.id, t.title, t.username, t.views, t.reply_count, t.created_at, f.name as forum_name
-                        FROM threads t LEFT JOIN forums f ON t.forum_id = f.id
-                        WHERE t.deleted_at IS NULL AND MATCH(t.title, t.content) AGAINST(? IN BOOLEAN MODE)
-                        ORDER BY t.created_at DESC LIMIT ? OFFSET ?
-                    ", [$booleanQuery, $perPage, $offset]);
-                } catch (\Throwable $e) {
-                    $booleanQuery = null; // 回退到 LIKE
-                }
-            }
-            if ($booleanQuery === null) {
-                $total = Database::fetchOne("SELECT COUNT(*) as cnt FROM threads WHERE deleted_at IS NULL AND (title LIKE ? OR content LIKE ?)", ["%{$escapedQ}%", "%{$escapedQ}%"])['cnt'] ?? 0;
-                $items = Database::fetchAll("
-                    SELECT t.id, t.title, t.username, t.views, t.reply_count, t.created_at, f.name as forum_name
-                    FROM threads t LEFT JOIN forums f ON t.forum_id = f.id
-                    WHERE t.deleted_at IS NULL AND (t.title LIKE ? OR t.content LIKE ?)
-                    ORDER BY t.created_at DESC LIMIT ? OFFSET ?
-                ", ["%{$escapedQ}%", "%{$escapedQ}%", $perPage, $offset]);
-            }
+        // 搜索同样不能越过板块浏览权限
+        if ($type === 'thread') {
+            $items = $this->onlyVisible($items);
         }
 
         $this->apiSuccess([
@@ -443,25 +475,13 @@ class Api extends ApiBase
         $perPage = 20;
         $offset = ($page - 1) * $perPage;
 
-        $total = Database::fetchOne(
-            "SELECT COUNT(*) as cnt FROM notifications WHERE user_id = ?",
-            [$this->authUser['id']]
-        )['cnt'] ?? 0;
+        $list = Notification::apiList((int)$this->authUser['id'], $perPage, $offset);
 
-        $items = Database::fetchAll("
-            SELECT n.*, u.username as from_username, u.avatar as from_avatar
-            FROM notifications n
-            LEFT JOIN users u ON n.from_user_id = u.id
-            WHERE n.user_id = ?
-            ORDER BY n.created_at DESC
-            LIMIT ? OFFSET ?
-        ", [$this->authUser['id'], $perPage, $offset]);
-
-        $unread = NotificationSvc::getUnreadCount($this->authUser['id']);
+        $unread = Notification::getUnreadCount((int)$this->authUser['id']);
 
         $this->apiSuccess([
-            'items' => $items,
-            'total' => (int)$total,
+            'items' => $list['items'],
+            'total' => $list['total'],
             'unread' => $unread,
             'page' => $page,
         ]);
@@ -477,35 +497,14 @@ class Api extends ApiBase
         $ids = $input['ids'] ?? [];
 
         if (empty($ids)) {
-            NotificationSvc::markAllRead($this->authUser['id']);
+            Notification::markAllRead($this->authUser['id']);
         } else {
             // 确保 ids 都是整数，防止注入
             $ids = array_map('intval', array_slice($ids, 0, 100));
-            $placeholders = implode(',', array_fill(0, count($ids), '?'));
-            $userId = $this->authUser['id'];
-
-            Database::beginTransaction();
             try {
-                // 统计实际被标记已读的未读通知数
-                $params = array_merge($ids, [$userId]);
-                $unreadCount = (int)(Database::fetchOne(
-                    "SELECT COUNT(*) as c FROM notifications WHERE id IN ({$placeholders}) AND user_id = ? AND is_read = 0",
-                    $params
-                )['c'] ?? 0);
-
-                Database::execute("UPDATE notifications SET is_read = 1 WHERE id IN ({$placeholders}) AND user_id = ?", $params);
-
-                if ($unreadCount > 0) {
-                    Database::execute(
-                        "UPDATE users SET unread_notifications = CASE WHEN unread_notifications >= ? THEN unread_notifications - ? ELSE 0 END WHERE id = ?",
-                        [$unreadCount, $unreadCount, $userId]
-                    );
-                }
-                Database::commit();
-                \Core\Cache::delete("unread_notif:{$userId}");
+                // 标记已读 + 递减未读计数由模型在一个事务里完成
+                Notification::markReadIds((int)$this->authUser['id'], $ids);
             } catch (\Throwable $e) {
-                Database::rollBack();
-                error_log('[Api] notificationRead failed: ' . $e->getMessage());
                 $this->apiError('操作失败，请重试');
                 return;
             }

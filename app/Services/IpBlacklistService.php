@@ -5,7 +5,7 @@
 
 namespace App\Services;
 
-use Core\Database;
+use App\Models\IpBlacklist;
 use Core\Cache;
 
 class IpBlacklistService
@@ -32,12 +32,7 @@ class IpBlacklistService
      */
     public static function add(string $ip, string $reason = '', int $expireAt = 0): void
     {
-        Database::execute(
-            "INSERT INTO ip_blacklist (ip, reason, expire_at, created_at) VALUES (?, ?, ?, ?)
-             ON DUPLICATE KEY UPDATE reason = VALUES(reason), expire_at = VALUES(expire_at), created_at = VALUES(created_at)",
-            [$ip, $reason, $expireAt, time()]
-        );
-
+        IpBlacklist::upsert($ip, $reason, $expireAt);
         self::clearCache();
     }
 
@@ -46,7 +41,7 @@ class IpBlacklistService
      */
     public static function remove(string $ip): void
     {
-        Database::execute("DELETE FROM ip_blacklist WHERE ip = ?", [$ip]);
+        IpBlacklist::deleteByIp($ip);
         self::clearCache();
     }
 
@@ -56,16 +51,7 @@ class IpBlacklistService
     private static function getBlacklistMap(): array
     {
         return Cache::getStale('ip_blacklist:map', function () {
-            $now = time();
-            $rows = Database::fetchAll(
-                "SELECT ip, expire_at FROM ip_blacklist WHERE expire_at = 0 OR expire_at >= ?",
-                [$now]
-            );
-            $map = [];
-            foreach ($rows as $row) {
-                $map[$row['ip']] = $row['expire_at'];
-            }
-            return $map;
+            return IpBlacklist::activeMap();
         }, 300);
     }
 

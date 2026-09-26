@@ -15,7 +15,6 @@ return [
     'user_list' => '用户列表',
     'user_groups' => '用户组',
     'user_settings' => '用户设置',
-    'online_users' => '在线用户',
     'site_settings' => '站点设置',
     'cache_manage' => '缓存管理',
     'cluster_manage' => '集群管理',

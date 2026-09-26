@@ -4,10 +4,11 @@
 
 ### 轻量、高性能、零依赖的现代 PHP 论坛系统
 
-[![PHP 8.2+](https://img.shields.io/badge/PHP-8.2+-8892BF?style=for-the-badge&logo=php&logoColor=white)](https://php.net)
-[![MySQL 8.0+](https://img.shields.io/badge/MySQL-8.0+-4479A1?style=for-the-badge&logo=mysql&logoColor=white)](https://mysql.com)
-[![Redis 7.0+](https://img.shields.io/badge/Redis-7.0+-DC382D?style=for-the-badge&logo=redis&logoColor=white)](https://redis.io)
-[![Alpine.js](https://img.shields.io/badge/Alpine.js-3.x-77C1D2?style=for-the-badge&logo=alpine.js&logoColor=white)](https://alpinejs.dev)
+[![PHP 8.0+](https://img.shields.io/badge/PHP-8.0%2B-8892BF?style=for-the-badge&logo=php&logoColor=white)](https://php.net)
+[![MySQL 5.6+](https://img.shields.io/badge/MySQL-5.6%2B-4479A1?style=for-the-badge&logo=mysql&logoColor=white)](https://mysql.com)
+[![Redis 可选](https://img.shields.io/badge/Redis-Optional-DC382D?style=for-the-badge&logo=redis&logoColor=white)](https://redis.io)
+[![htmx](https://img.shields.io/badge/htmx-2.x-3D72D7?style=for-the-badge)](https://htmx.org)
+[![Layui](https://img.shields.io/badge/Layui-2.6.3-16baaa?style=for-the-badge)](https://layui.dev)
 [![License](https://img.shields.io/badge/License-Proprietary-red?style=for-the-badge)](./LICENSE)
 [![Commercial Use](https://img.shields.io/badge/Commercial-Forbidden-red?style=for-the-badge)](./LICENSE)
 
@@ -32,7 +33,7 @@
 
 ## 📖 项目简介
 
-AMuBBS 是一款面向中小型社区的**现代论坛系统**。不依赖任何第三方框架，基于 PHP 8.2 从零构建自研微框架，采用 **Controller → Service → Repository** 三层架构，配合 Redis 多级缓存，追求极致的性能与开发体验。
+AMuBBS 是一款面向中小型社区的**现代论坛系统**。不依赖任何第三方框架，基于 PHP 8.2 从零构建自研微框架，采用 **Controller + Service + Model** 架构，缓存默认走文件驱动（没有 Redis 也能跑），追求极致的轻量与部署体验。
 
 > 💡 设计理念参考 [Xiuno BBS](https://bbs.xiuno.com/)，以现代 PHP 8.2 架构全面重新实现。
 
@@ -40,13 +41,13 @@ AMuBBS 是一款面向中小型社区的**现代论坛系统**。不依赖任何
 
 | 维度 | Xiuno BBS | AMuBBS |
 |:-----|:----------|:-------|
-| PHP 版本 | PHP 7.0+ | **PHP 8.2+**（JIT、属性、枚举、纤程） |
-| 前端方案 | Bootstrap 4 + jQuery 3 | **Alpine.js**（15KB，零构建） |
-| 架构模式 | MVC 混合 | **三层架构**（Controller → Service → Repository） |
-| 缓存策略 | 可选多种 | **Redis 为核心**，四级缓存体系 |
-| API 设计 | 传统表单提交 | **RESTful API** 优先，JSON 响应 |
-| 实时通知 | 轮询 | **WebSocket**（Swoole / Workerman） |
-| 插件系统 | Hook + Overwrite | **事件驱动 + 依赖注入** |
+| PHP 版本 | PHP 7.0+ | **PHP 8.0+**（类型系统增强、match 表达式） |
+| 前端方案 | Bootstrap 4 + jQuery 3 | **htmx 2 + 自研 CSS**（零构建，服务端渲染片段；Alpine.js 已移除，后台另用 layuimini v2 + Layui 2.6.3） |
+| 架构模式 | MVC 混合 | **Controller + Service + Model**（数据访问收敛在 Model，检查器强制） |
+| 缓存策略 | 可选多种 | **文件缓存 / Redis 双驱动**，没有 Redis 也能跑（`CACHE_DRIVER=auto`） |
+| API 设计 | 传统表单提交 | **RESTful API** 优先，`{code, message, data}` JSON 响应 |
+| 实时通知 | 轮询 | 轮询 + REST API（`/api/notifications`），不做 WebSocket |
+| 插件系统 | Hook + Overwrite | **WordPress 风格钩子**（`add_action` / `apply_filters`，后台可启停） |
 
 ---
 
@@ -60,7 +61,7 @@ AMuBBS 是一款面向中小型社区的**现代论坛系统**。不依赖任何
 - 🏠 多板块管理（子板块、板块权限、版主系统）
 - 📝 发帖 / 回复 / 编辑 / 删除 / 移动
 - 📌 置顶 / 加精 / 锁帖
-- ✍️ Markdown + TinyMCE 双编辑器
+- ✍️ Markdown 编辑器（无第三方富文本依赖）
 - 🖼️ 图片上传、附件上传下载
 - 🔍 MySQL 全文搜索 + 高级筛选
 - 💰 付费内容、隐藏内容
@@ -140,15 +141,15 @@ AMuBBS 是一款面向中小型社区的**现代论坛系统**。不依赖任何
 ┌──────────────────────────▼──────────────────────────────────┐
 │                     应用层 PHP-FPM                           │
 │  ┌─────────┐  ┌──────────┐  ┌───────────┐  ┌────────────┐  │
-│  │ 中间件   │→│ 控制器    │→│  服务层    │→│  仓库层     │  │
-│  │Auth     │  │Controller│  │ Service   │  │Repository  │  │
-│  │CSRF     │  │          │  │           │  │            │  │
+│  │ 中间件   │→│ 控制器    │→│  服务层    │→│  模型层     │  │
+│  │Auth     │  │Controller│  │ Service   │  │  Model     │  │
+│  │CSRF     │  │          │  │           │  │（数据访问） │  │
 │  │RateLimit│  │          │  │           │  │            │  │
 │  └─────────┘  └──────────┘  └───────────┘  └────────────┘  │
 └──────────┬──────────────────────────┬───────────────────────┘
            │                          │
 ┌──────────▼──────────┐  ┌────────────▼───────────────────────┐
-│    缓存层 Redis      │  │         数据层 MySQL               │
+│  缓存层 文件 / Redis  │  │         数据层 MySQL               │
 │  · 页面缓存          │  │  · 30 张数据表                     │
 │  · 数据缓存          │  │  · InnoDB 引擎                    │
 │  · Session 存储      │  │  · 全文索引                       │
@@ -160,14 +161,14 @@ AMuBBS 是一款面向中小型社区的**现代论坛系统**。不依赖任何
 
 | 层级 | 技术 | 说明 |
 |:-----|:-----|:-----|
-| **后端语言** | PHP 8.2+ | OPcache + JIT 加速，利用属性、枚举、纤程等新特性 |
-| **Web 服务** | Nginx + PHP-FPM | 高并发处理，静态资源优化 |
-| **数据库** | MySQL 8.0+ | InnoDB 引擎，全文索引，窗口函数 |
-| **缓存** | Redis 7.0+ | 多级缓存，Session 共享，频率限制 |
-| **前端** | Alpine.js 3.x | 15KB 极致轻量，类 Vue 语法，零构建 |
-| **后台 UI** | Layui | 开箱即用的后台管理界面 |
-| **架构模式** | 三层架构 | Controller → Service → Repository |
-| **插件系统** | 事件驱动 | EventDispatcher + 依赖注入容器 |
+| **后端语言** | PHP 8.0+ | 兼容共享主机常见的 8.0 / 8.1 / 8.2，可开启 OPcache 加速 |
+| **Web 服务** | Nginx / Apache / 虚拟主机 | 无 root、无 shell、无常驻进程也能跑 |
+| **数据库** | MySQL 5.6+ / MariaDB 10+ | InnoDB 引擎，不依赖 MySQL 8 专有特性 |
+| **缓存** | 文件缓存（默认）/ Redis（可选） | 没有 Redis 时自动使用文件缓存，零扩展依赖 |
+| **前端** | htmx 2.0.11 + 自研 CSS | 零构建、无 CDN 依赖，交互以服务端渲染片段为主（Alpine.js 已移除） |
+| **后台 UI** | layuimini v2 + Layui 2.6.3 + Font Awesome 4.7 | 本地 vendored，iframe 多标签外壳；只在后台加载（前台不加载 layui） |
+| **架构模式** | Controller + Service + Model | 数据访问集中在 Model，Service 只放业务流程与事务边界 |
+| **插件系统** | WordPress 风格钩子 | `add_action` / `apply_filters`，零依赖，后台可启停 |
 
 ---
 
@@ -175,14 +176,19 @@ AMuBBS 是一款面向中小型社区的**现代论坛系统**。不依赖任何
 
 ### 环境要求
 
-| 软件 | 最低版本 | 推荐版本 |
-|:-----|:---------|:---------|
-| PHP | 8.2 | 8.3 |
-| MySQL | 8.0 | 8.0+ |
-| Redis | 7.0 | 7.2+ |
-| Nginx | 1.20 | 1.24+ |
+| 软件 | 最低版本 | 推荐版本 | 说明 |
+|:-----|:---------|:---------|:-----|
+| PHP | 8.0 | 8.2+ | 只用到 `str_starts_with` / `match` 等 8.0 特性 |
+| MySQL | 5.6 | 5.7+ / 8.0 | 或 MariaDB 10.0+；不依赖 MySQL 8 专有语法 |
+| Redis | 不需要 | 7.0+ | **可选**，没有时自动使用文件缓存 |
+| Web 服务器 | 任意 | Nginx 1.20+ | 也支持 Apache、共享虚拟主机、PHP 内置服务器 |
 
-> ⚠️ 需要启用的 PHP 扩展：`pdo_mysql`、`redis`、`opcache`、`mbstring`、`gd`
+
+> ⚠️ 必须启用的 PHP 扩展：`pdo_mysql`、`mbstring`、`json`
+>
+> 💡 可选扩展：`redis`（有则启用，无则自动走文件缓存）、`opcache`（提速）、`gd`（图片处理）、`zip`（备份/插件）
+>
+> ✅ 不需要：Composer、npm/Node、root 权限、shell 访问、常驻进程、cron
 
 ### 安装步骤
 
@@ -193,11 +199,15 @@ cd AMuBBS
 
 # 2️⃣ 配置环境变量
 cp .env.example .env
-# 编辑 .env，填写数据库和 Redis 连接信息
+# 编辑 .env，通常只需填 DB_* 四项；
+# 没有 Redis 就保持 CACHE_DRIVER=auto，会自动使用文件缓存
 
 # 3️⃣ 创建数据库并导入
 mysql -u root -p -e "CREATE DATABASE amubbs DEFAULT CHARSET utf8mb4 COLLATE utf8mb4_unicode_ci;"
 mysql -u root -p amubbs < install/database.sql
+
+# 3.5️⃣ 可选：补上全文索引（MySQL 5.6+ / MariaDB 10+ 建议执行，加速英文搜索）
+mysql -u root -p amubbs < install/optional_fulltext.sql
 
 # 4️⃣ 设置目录权限
 chmod -R 755 storage/ public/uploads/
@@ -215,9 +225,10 @@ php -S localhost:8000 -t public public/router.php
 
 ```ini
 # ── 应用配置 ──────────────────────────
-APP_MODE=single              # single（单机）| distributed（分布式）
 APP_DEBUG=false              # 调试模式
 APP_URL=http://localhost:8000
+APP_KEY=                     # 「记住我」/后台 API Token 的签名密钥，建议显式配置
+                             # 生成：php -r "echo bin2hex(random_bytes(32));"
 
 # ── 数据库 ────────────────────────────
 DB_HOST=127.0.0.1
@@ -225,19 +236,59 @@ DB_PORT=3306
 DB_DATABASE=amubbs
 DB_USERNAME=root
 DB_PASSWORD=
+# 有从库时才配，读连接会自动回退主库
+# DB_READ_HOST=192.168.1.202,192.168.1.203
 
-# ── Redis ─────────────────────────────
+# ── Redis（可选，没有会自动用文件缓存）──
 REDIS_HOST=127.0.0.1
 REDIS_PORT=6379
 REDIS_PASSWORD=
 
 # ── 驱动选择 ──────────────────────────
-SESSION_DRIVER=file          # file | redis
-CACHE_DRIVER=redis           # redis | file
-UPLOAD_DRIVER=local          # local | oss | nfs
+SESSION_DRIVER=file          # file（默认）| redis（多节点共享登录态时用）
+CACHE_DRIVER=auto            # auto（推荐）| file | redis
+
+# 上传：附件与图片固定存 public/uploads/，多节点时把该目录做成共享存储挂载，
+# 没有 OSS 之类的驱动开关。
 ```
 
+> 上面每一项都被代码真实读取（`php scripts/check_env.php` 会校验 `.env.example` 与代码一致，
+> 防止出现「文档里有、代码不读」的死配置）。
+
 </details>
+
+---
+
+## 🪶 部署到共享虚拟主机
+
+如果只有 1C1G 小机器或共享空间（无 root、无 shell、无 Redis），按下面做即可：
+
+1. 把 **`public/` 目录**作为网站根目录（`storage/` 必须留在 Web 根目录之外，否则缓存文件可被直接下载）
+2. 确保 `storage/` 可写（Linux 下 `chmod -R 755 storage`，个别主机需要 `777`）
+3. 编辑 `.env`，通常只填 `DB_*` 四项：
+
+   ```ini
+   DB_HOST=localhost
+   DB_PORT=3306
+   DB_DATABASE=你的库名
+   DB_USERNAME=你的用户名
+   DB_PASSWORD=你的密码
+   CACHE_DRIVER=auto      # 没有 Redis 时自动使用文件缓存
+   ```
+
+4. 浏览器访问 `https://你的域名/install` 走完安装向导
+
+**为什么在这些环境里能跑：**
+
+| 约束 | 本项目如何应对 |
+|:-----|:-----|
+| 没有 Redis | `CACHE_DRIVER=auto` 探测不到 Redis 时自动使用 `storage/cache/` 文件缓存，功能不降级 |
+| 没有 shell / cron | 文件缓存自带惰性 GC，过期数据在读写时顺手清理，不依赖任何定时任务 |
+| 没有 root | 只需要 `storage/` 可写，不需要任何系统级权限或常驻进程 |
+| MySQL 版本老 | 主库脚本不含 FULLTEXT 索引，MySQL 5.6+ / MariaDB 10+ 都能顺利建表 |
+| 中文搜索不准 | 中文关键词自动改走 LIKE，绕开 InnoDB FULLTEXT 对 CJK 分词不准导致的漏结果 |
+
+> 💡 缓存目录默认 `storage/cache/`，可用 `CACHE_FILE_PATH` 指到站点目录之外。
 
 ---
 
@@ -246,38 +297,39 @@ UPLOAD_DRIVER=local          # local | oss | nfs
 ```
 AMuBBS/
 ├── app/                             # 📦 应用层
-│   ├── Controllers/                 #   控制器（17 个前台 + 15 个后台）
+│   ├── Controllers/                 #   控制器（17 个前台 + 16 个后台）
 │   │   ├── Admin/                   #   后台管理控制器
 │   │   ├── Index.php                #   首页
 │   │   ├── Thread.php               #   帖子
 │   │   ├── User.php                 #   用户
 │   │   └── ...
-│   ├── Services/                    #   业务逻辑层（35 个服务）
-│   ├── Repositories/                #   数据访问层
+│   ├── Services/                    #   业务逻辑层（26 个服务：规则 + 事务边界 + 审计日志）
+│   ├── Models/                      #   数据访问层（40 个模型：SQL + 行级缓存失效）
 │   ├── Middlewares/                  #   中间件（Auth / CSRF / RateLimit / RunLevel）
-│   ├── Events/                      #   事件定义
+│   ├── Events/                      #   事件定义（30 个事件常量）
 │   └── Listeners/                   #   事件监听器
 │
-├── core/                            # ⚙️ 自研微框架（21 个核心类）
+├── core/                            # ⚙️ 自研微框架（24 个核心类）
 │   ├── Bootstrap.php                #   启动引导
 │   ├── Router.php                   #   路由器
 │   ├── Database.php                 #   数据库封装
-│   ├── Cache.php                    #   缓存封装
+│   ├── Cache.php                    #   缓存封装（文件 / Redis）
 │   ├── Security.php                 #   安全组件
-│   ├── Container.php                #   依赖注入容器
-│   ├── EventDispatcher.php          #   事件调度器
-│   ├── PluginManager.php            #   插件管理器
+│   ├── Event.php                    #   钩子调度器（add_action / apply_filters）
+│   ├── hooks.php                    #   全局钩子函数（插件作者用）
+│   ├── PluginManager.php            #   插件管理器（含 install / uninstall 生命周期）
 │   └── ...
 │
 ├── config/                          # ⚙️ 配置文件
 │   ├── app.php                      #   应用配置
-│   ├── database.php                 #   数据库配置
+│   ├── database.php                 #   数据库配置（含读写分离）
 │   └── cache.php                    #   缓存配置
 │
-├── plugins/                         # 🔌 插件目录（需手动加载）
+├── plugins/                         # 🔌 插件目录（后台「系统管理 → 插件管理」启停）
+│   └── Example/                     #   自带示例插件
 │
 ├── resources/                       # 🎨 资源文件
-│   ├── views/                       #   视图模板
+│   ├── views/                       #   视图模板（103 个）
 │   └── lang/                        #   多语言（zh-cn / en-us）
 │
 ├── public/                          # 🌐 Web 根目录（单一入口）
@@ -288,22 +340,25 @@ AMuBBS/
 ├── storage/                         # 💾 运行时存储
 │   ├── cache/                       #   文件缓存
 │   ├── logs/                        #   日志
+│   ├── plugin_config/               #   插件启用状态（plugins.json）
 │   └── sessions/                    #   Session 文件
 │
-├── install/                         # 📥 安装器 & 数据库结构（30 张表）
+├── install/                         # 📥 安装器 & 数据库结构（39 张表）
+├── scripts/                         # ✅ 验证脚本（冒烟 + 自检 + 5 个静态检查器）
 ├── docs/                            # 📚 开发文档（16 篇）
-├── preload.php                      # OPcache 预加载
-├── deploy.sh                        # 🚀 自动部署脚本
-└── .env.example                     # 环境变量模板
+└── .env.example                     # 环境变量模板（每项都会被代码读取）
 ```
 
 ---
 
 ## 🔌 插件系统
 
-AMuBBS 采用**事件驱动 + 依赖注入**的插件架构，支持热插拔、配置管理和生命周期管理。
+AMuBBS 采用 **WordPress 风格钩子**的插件架构：插件通过 `add_action()` / `add_filter()`
+挂到核心已经派发的事件与过滤器上，零依赖（不需要 Composer、不需要改核心文件）。
 
-> ⚠️ **注意**：插件系统正在重构中，当前版本需手动加载插件。
+- 启用状态存 `storage/plugin_config/plugins.json`，后台 **系统管理 → 插件管理** 可启停/卸载；
+- 首次启用调用插件的 `install()`，卸载调用 `uninstall()`（都是可选的）；
+- 单个插件加载失败只记日志并跳过，不会把整站打成白屏。
 
 ### 开发自己的插件
 
@@ -312,27 +367,47 @@ AMuBBS 采用**事件驱动 + 依赖注入**的插件架构，支持热插拔、
 
 ```
 plugins/MyPlugin/
-├── MyPluginPlugin.php       # 主类（必须，实现 PluginInterface）
-├── plugin.json              # 元数据（必须，名称/版本/描述）
-├── config.php               # 默认配置（可选）
-└── assets/                  # 静态资源（可选）
+├── Plugin.php               # 主类（必须，实现 Core\PluginInterface 的 register()）
+├── plugin.json              # 元数据（必须，name / title / version / entry / class）
+└── assets/                  # 静态资源（可选，通过 /plugin-assets/MyPlugin/... 访问）
 ```
 
 **plugin.json 示例：**
 
 ```json
 {
-    "name": "MyPlugin",
+    "name": "myplugin",
+    "title": "我的插件",
     "version": "1.0.0",
     "description": "我的自定义插件",
     "author": "Your Name",
-    "require": {
-        "php": ">=8.2"
+    "entry": "Plugin.php",
+    "class": "Plugins\\MyPlugin\\Plugin"
+}
+```
+
+**Plugin.php 示例：**
+
+```php
+<?php
+namespace Plugins\MyPlugin;
+
+use Core\PluginInterface;
+
+class Plugin implements PluginInterface
+{
+    public function register(): void
+    {
+        add_filter('thread.title', fn(string $t) => $t . ' [MyPlugin]');
+        add_action('thread.created', function (array $data) {
+            // $data = ['thread_id'=>, 'forum_id'=>, 'user_id'=>, 'username'=>]
+        });
     }
 }
 ```
 
-详细开发指南请参阅 [`docs/10-插件开发.md`](./docs/10-插件开发.md)
+详细开发指南请参阅 [`docs/10-插件开发.md`](./docs/10-插件开发.md)，
+实现原理见 [`docs/08-插件系统.md`](./docs/08-插件系统.md)。
 
 </details>
 
@@ -415,65 +490,91 @@ plugins/MyPlugin/
 <details>
 <summary>📋 <b>Nginx 配置</b>（点击展开）</summary>
 
+仓库里有**完整、可直接抄**的配置文件：[`install/nginx.conf.example`](./install/nginx.conf.example)（含上传目录禁执行、静态资源缓存/压缩、隐藏文件兜底）。
+下面是最关键的部分——注意 `root` 必须指向 `public/`，且 **`/uploads/` 必须禁止执行脚本**（上传目录全是用户可控内容）：
+
 ```nginx
 server {
     listen 80;
     server_name example.com;
-    root /var/www/AMuBBS/public;
+    root /var/www/AMuBBS/public;      # 不是项目根！
     index index.php;
+    client_max_body_size 25m;
 
     # 安全头
     add_header X-Frame-Options "SAMEORIGIN" always;
     add_header X-Content-Type-Options "nosniff" always;
-    add_header X-XSS-Protection "1; mode=block" always;
+    add_header Referrer-Policy "strict-origin-when-cross-origin" always;
 
     # 路由重写
     location / {
         try_files $uri $uri/ /index.php?$query_string;
     }
 
-    # PHP 处理
-    location ~ \.php$ {
+    # 上传目录：禁止任何脚本被解析（伪装成图片的 .php 是经典打穿方式）
+    location ^~ /uploads/ {
+        location ~ \.(php|phtml|php[0-9]|pht|phar|cgi|pl|py|sh|asp|aspx|jsp)$ { return 403; }
+        add_header X-Content-Type-Options "nosniff";
+        add_header Content-Security-Policy "default-src 'none'; img-src 'self' data:; media-src 'self'; style-src 'unsafe-inline'; sandbox";
+        add_header Cache-Control "public, max-age=2592000";
+        try_files $uri =404;
+    }
+
+    # 只允许 index.php 走 PHP，其余 .php 一律 404
+    location = /index.php {
         fastcgi_pass unix:/run/php/php8.2-fpm.sock;
-        fastcgi_param SCRIPT_FILENAME $document_root$fastcgi_script_name;
+        fastcgi_param SCRIPT_FILENAME $document_root/index.php;
         include fastcgi_params;
     }
+    location ~ \.php$ { return 404; }
 
     # 静态资源缓存
     location ~* \.(css|js|png|jpg|gif|ico|svg|woff2?|ttf|eot)$ {
-        expires 30d;
+        expires 7d;
         access_log off;
-        add_header Cache-Control "public, immutable";
+        add_header Cache-Control "public";
     }
 
-    # 禁止访问敏感文件
-    location ~ /\.(env|git|htaccess) { deny all; }
-    location ~ ^/(storage|config|core|app)/ { deny all; }
+    # 禁止访问隐藏文件
+    location ~ /\.(?!well-known) { deny all; }
 }
 ```
+
+> 反向代理部署（Nginx 终止 TLS 后转 php-fpm）时，请到 **后台 → 系统设置** 把反代 IP 填进 `trusted_proxies`，
+> 否则应用无法区分真实客户端 IP，限流 / 登录锁定 / `admin_bind_ip` 全部失效。
 
 </details>
 
 <details>
 <summary>⚙️ <b>PHP 优化配置</b>（点击展开）</summary>
 
+完整版见 [`install/php.ini.example`](./install/php.ini.example)（含 Session GC、上传上限、生产环境必须关闭的项）：
+
 ```ini
-; ── OPcache ───────────────────────
+; ── OPcache（未开时首页冷渲染 p50 ≈ 39ms）─────
 opcache.enable=1
-opcache.memory_consumption=128
-opcache.max_accelerated_files=10000
+opcache.memory_consumption=256
+opcache.max_accelerated_files=20000
 opcache.validate_timestamps=0
 opcache.preload=/var/www/AMuBBS/preload.php
 opcache.preload_user=www-data
 
-; ── JIT ───────────────────────────
-opcache.jit=1255
-opcache.jit_buffer_size=64M
+; ── Session（必须与 config/app.php 的 SESSION_LIFETIME 对齐）─────
+session.gc_maxlifetime=7200
+session.gc_probability=1
+session.gc_divisor=100
+session.use_strict_mode=1
 
-; ── PHP ───────────────────────────
+; ── 上传与超时 ─────────────────────
 memory_limit=256M
-upload_max_filesize=10M
-post_max_size=10M
+upload_max_filesize=20M
+post_max_size=25M
+max_execution_time=60
+
+; ── 生产环境务必 ───────────────────
+display_errors=Off
+log_errors=On
+expose_php=Off
 ```
 
 </details>
@@ -523,17 +624,17 @@ AMuBBS 提供完整的 RESTful API，支持移动端和第三方集成：
 |:-:|:-----|:-----|
 | 00 | [总览](./docs/00-总览.md) | 文档导航、技术栈总结、快速开始 |
 | 01 | [概述](./docs/01-概述.md) | 项目定位、技术选型、开发规划 |
-| 02 | [架构](./docs/02-架构.md) | 五层架构、核心框架、三层模式 |
-| 03 | [数据库](./docs/03-数据库.md) | 30 张表设计、索引优化、分表方案 |
-| 04 | [性能](./docs/04-性能.md) | 多级缓存、查询优化、JIT 配置 |
-| 05 | [API](./docs/05-API.md) | RESTful 接口、WebSocket、限流 |
-| 06 | [前端选型](./docs/06-前端选型.md) | jQuery vs Alpine.js vs Vue 3 对比 |
-| 07 | [Alpine 开发](./docs/07-Alpine开发.md) | 组件开发、实战示例、性能技巧 |
-| 08 | [插件系统](./docs/08-插件系统.md) | 架构设计、核心组件、完整实现 |
-| 09 | [分布式](./docs/09-分布式.md) | CDN、负载均衡、读写分离、集群 |
-| 10 | [插件开发](./docs/10-插件开发.md) | 快速开始、实战示例、发布流程 |
-| 11 | [扩展](./docs/11-扩展.md) | 无状态设计、平滑迁移、自动化部署 |
-| 12 | [后台](./docs/12-后台.md) | 分布式配置、节点监控、系统设置 |
+| 02 | [架构](./docs/02-架构.md) | 分层架构、核心框架（Bootstrap/Router/Database/Cache）、Controller + Model 分层纪律 |
+| 03 | [数据库](./docs/03-数据库.md) | 表结构设计、索引优化 |
+| 04 | [性能](./docs/04-性能.md) | 多级缓存、查询优化 |
+| 05 | [API](./docs/05-API.md) | RESTful 接口、鉴权、限流 |
+| 06 | [前端选型](./docs/06-前端选型.md) | 自研 CSS + htmx 方案与历史选型对比 |
+| 07 | [htmx 开发](./docs/07-htmx开发.md) | 服务端渲染片段、data-* 增强、实战示例 |
+| 08 | [插件系统](./docs/08-插件系统.md) | 钩子内核、插件生命周期、后台管理、验证方式 |
+| 09 | [分布式](./docs/09-分布式.md) | CDN、负载均衡、读写分离 |
+| 10 | [插件开发](./docs/10-插件开发.md) | 快速开始、事件与过滤器清单、发布检查清单 |
+| 11 | [扩展](./docs/11-扩展.md) | 从单机到多机：无状态设计、平滑迁移、自动化部署 |
+| 12 | [后台](./docs/12-后台.md) | 后台架构（layuimini v2 + Layui 2.6.3）、模块清单、权限与交互约定 |
 
 ---
 
@@ -559,6 +660,13 @@ git commit -m 'feat: 描述你的改动'
 
 # 4. 推送并创建 PR
 git push origin feature/your-feature
+```
+
+**提交前请跑一遍验证**（语法 + 7 个静态检查器 + 3 个自检 + 125 项冒烟），必须在**无 Redis**环境下全绿：
+
+```bash
+bash scripts/verify.sh          # Linux / macOS / CI
+powershell scripts/verify.ps1   # Windows
 ```
 
 提交信息遵循 [Conventional Commits](https://www.conventionalcommits.org/) 规范：

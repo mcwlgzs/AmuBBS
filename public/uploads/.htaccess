@@ -1,0 +1,38 @@
+# 上传目录安全策略
+#
+# 上传目录里全是用户可控内容，必须禁止任何脚本被解析执行，
+# 否则攻击者上传一个伪装成图片的 .php 文件就能拿到服务器权限。
+
+# 1) 关闭 PHP 解析：把所有脚本文件当作纯文本处理
+<IfModule mod_php.c>
+    php_flag engine off
+</IfModule>
+<IfModule mod_php7.c>
+    php_flag engine off
+</IfModule>
+<IfModule mod_php8.c>
+    php_flag engine off
+</IfModule>
+
+# 2) 兜底：直接拒绝对脚本文件的访问
+<IfModule mod_authz_core.c>
+    <FilesMatch "\.(php|phtml|php[0-9]|pht|phar|cgi|pl|py|sh|asp|aspx|jsp)$">
+        Require all denied
+    </FilesMatch>
+</IfModule>
+<IfModule !mod_authz_core.c>
+    <FilesMatch "\.(php|phtml|php[0-9]|pht|phar|cgi|pl|py|sh|asp|aspx|jsp)$">
+        Deny from all
+    </FilesMatch>
+</IfModule>
+
+# 3) 不允许在此目录内执行 CGI，也不允许列目录
+Options -ExecCGI -Indexes
+
+# 4) 允许图片内联显示（头像、帖子图片都靠它），
+#    但用 CSP 把上传文件里的脚本执行能力关掉，防止伪装成图片的 HTML/SVG 触发存储型 XSS。
+#    注意：这里【不能】设置 Content-Disposition: attachment，否则所有头像和图片都会变成下载。
+<IfModule mod_headers.c>
+    Header set X-Content-Type-Options "nosniff"
+    Header set Content-Security-Policy "default-src 'none'; img-src 'self' data:; media-src 'self'; style-src 'unsafe-inline'; sandbox"
+</IfModule>

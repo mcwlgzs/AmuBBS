@@ -25,9 +25,14 @@
                     <span class="site-info-stat-value"><?= number_format($stats['users'] ?? 0) ?></span>
                     <span class="site-info-stat-label">会员</span>
                 </div>
-                <div class="site-info-stat stat-online">
-                    <span class="site-info-stat-value"><?= number_format($onlineSummary['total'] ?? 0) ?></span>
-                    <span class="site-info-stat-label">在线</span>
+                <?php
+                // 今日新帖（主题 + 回复）。$todayStats 由 IndexController 取好并缓存（runtime:today，60 秒），
+                // 不额外增加查询；这个格子补上后正好填满四列网格（.site-info-stats 是 repeat(4,1fr)）。
+                $todayTotal = (int)($todayStats['threads'] ?? 0) + (int)($todayStats['posts'] ?? 0);
+                ?>
+                <div class="site-info-stat stat-today">
+                    <span class="site-info-stat-value"><?= number_format($todayTotal) ?></span>
+                    <span class="site-info-stat-label">今日</span>
                 </div>
             </div>
         </div>
@@ -78,79 +83,24 @@
             if(r.length){s.textContent=r.join(',')+'{display:none!important}';document.head.appendChild(s);}
         })();
         </script>
-        <div class="announcement-wrap" x-data="annWrap(<?= $annHideMins ?>)" x-init="init()">
+        <?php /* 关闭公告只记 localStorage（访客没有账号），由 app.js 的 [data-ann-hide] 处理；
+                 「查看全部」用原生 <details>，展开/收起不需要任何 JS */ ?>
+        <div class="announcement-wrap" data-ann-wrap data-ann-hide-mins="<?= (int)$annHideMins ?>">
             <?php foreach ($annVisible as $i => $a): ?>
-            <div class="announcement-item ann-id-<?= (int)$a['id'] ?> <?= $a['type'] == 2 ? 'ann-urgent' : ($a['type'] == 1 ? 'ann-important' : '') ?>"
-                 x-show="!isHidden(<?= (int)$a['id'] ?>)" x-transition>
-                <div class="announcement-icon">
-                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>
-                </div>
-                <div class="announcement-text">
-                    <?php if ($a['url']): ?><a href="<?= htmlspecialchars($a['url']) ?>"><?= htmlspecialchars($a['title']) ?></a>
-                    <?php else: ?><?= htmlspecialchars($a['title']) ?><?php endif; ?>
-                </div>
-                <button class="announcement-close" @click="hide(<?= (int)$a['id'] ?>)" title="关闭公告">
-                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
-                </button>
-            </div>
+            <?php include APP_PATH . 'resources/views/index/_announcement_item.php'; ?>
             <?php endforeach; ?>
             <?php if (!empty($annExtra)): ?>
-            <template x-if="expanded">
-                <div>
-                    <?php foreach ($annExtra as $a): ?>
-                    <div class="announcement-item ann-id-<?= (int)$a['id'] ?> <?= $a['type'] == 2 ? 'ann-urgent' : ($a['type'] == 1 ? 'ann-important' : '') ?>"
-                         x-show="!isHidden(<?= (int)$a['id'] ?>)" x-transition>
-                        <div class="announcement-icon">
-                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>
-                        </div>
-                        <div class="announcement-text">
-                            <?php if ($a['url']): ?><a href="<?= htmlspecialchars($a['url']) ?>"><?= htmlspecialchars($a['title']) ?></a>
-                            <?php else: ?><?= htmlspecialchars($a['title']) ?><?php endif; ?>
-                        </div>
-                        <button class="announcement-close" @click="hide(<?= (int)$a['id'] ?>)" title="关闭公告">
-                            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
-                        </button>
-                    </div>
-                    <?php endforeach; ?>
-                </div>
-            </template>
-            <div class="announcement-more">
-                <button class="announcement-toggle" @click="expanded = !expanded" x-text="expanded ? '收起公告' : '查看全部 <?= (int)$annTotal ?> 条公告'"></button>
-            </div>
+            <details class="announcement-more">
+                <summary class="announcement-toggle">
+                    <span class="ann-more-closed">查看全部 <?= (int)$annTotal ?> 条公告</span>
+                    <span class="ann-more-open">收起公告</span>
+                </summary>
+                <?php foreach ($annExtra as $a): ?>
+                <?php include APP_PATH . 'resources/views/index/_announcement_item.php'; ?>
+                <?php endforeach; ?>
+            </details>
             <?php endif; ?>
         </div>
-        <script>
-        function annWrap(hideMins) {
-            return {
-                expanded: false,
-                hideMins: hideMins,
-                hidden: {},
-                init() {
-                    try {
-                        const data = JSON.parse(localStorage.getItem('ann_hidden') || '{}');
-                        const now = Date.now();
-                        // 清理过期记录
-                        for (const [id, ts] of Object.entries(data)) {
-                            if (this.hideMins > 0 && (now - ts) < this.hideMins * 60000) {
-                                this.hidden[id] = ts;
-                            }
-                        }
-                        localStorage.setItem('ann_hidden', JSON.stringify(this.hidden));
-                    } catch(e) {}
-                },
-                isHidden(id) {
-                    const ts = this.hidden[id];
-                    if (!ts) return false;
-                    if (this.hideMins <= 0) return false;
-                    return (Date.now() - ts) < this.hideMins * 60000;
-                },
-                hide(id) {
-                    this.hidden[id] = Date.now();
-                    try { localStorage.setItem('ann_hidden', JSON.stringify(this.hidden)); } catch(e) {}
-                }
-            };
-        }
-        </script>
         <?php endif; ?>
 
         <!-- 板块导航条 -->
@@ -191,8 +141,7 @@
                         <div class="thread-item-body">
                             <div class="thread-item-title">
                                 <a href="/thread/<?= (int)$thread['id'] ?>"><?= htmlspecialchars($thread['title']) ?></a>
-                                <?php if ($thread['is_top'] ?? false): ?><span class="tag tag-top" title="置顶"><svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M12 19V5M5 12l7-7 7 7"/></svg></span><?php endif; ?>
-                                <?php if ($thread['is_highlight'] ?? false): ?><span class="tag tag-highlight" title="精华"><svg viewBox="0 0 24 24" width="12" height="12" fill="currentColor"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg></span><?php endif; ?>
+                                <?php $badgeThread = $thread; include APP_PATH . 'resources/views/components/thread-badges.php'; ?>
                                 <?php if ($thread['is_locked'] ?? false): ?><span class="tag tag-locked" title="已锁定"><svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2.5"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg></span><?php endif; ?>
                             </div>
                             <div class="thread-item-meta">
@@ -239,35 +188,7 @@
     <div class="home-sidebar">
         <!-- 签到 -->
         <?php if (isset($_SESSION['user_id'])): ?>
-        <div class="card checkin-card" x-cloak x-data="{ checkedIn: <?= $checkedIn ? 'true' : 'false' ?>, credits: <?= (int)($checkinCredits ?? 0) ?>, days: <?= (int)($checkinDays ?? 0) ?>, loading: false }">
-            <template x-if="!checkedIn">
-                <div class="checkin-inner">
-                    <div class="checkin-icon">📅</div>
-                    <div class="checkin-text">
-                        <div class="checkin-label">每日签到</div>
-                        <div class="checkin-hint">签到领取积分奖励</div>
-                    </div>
-                    <button class="btn btn-primary btn-sm" :disabled="loading" @click="
-                        loading = true;
-                        App.post('/checkin', {}, {silent:true})
-                        .then(d => { if(d.success) { checkedIn = true; credits = d.data.credits; days = d.data.consecutive_days; } })
-                        .finally(() => loading = false)
-                    ">
-                        <span x-show="!loading">签到</span>
-                        <span x-show="loading">...</span>
-                    </button>
-                </div>
-            </template>
-            <template x-if="checkedIn">
-                <div class="checkin-inner checkin-done">
-                    <div class="checkin-icon">✅</div>
-                    <div class="checkin-text">
-                        <div class="checkin-label">今日已签到</div>
-                        <div class="checkin-hint" x-show="credits">+<span x-text="credits"></span> 积分，连续 <span x-text="days"></span> 天</div>
-                    </div>
-                </div>
-            </template>
-        </div>
+        <?php include APP_PATH . 'resources/views/index/_checkin.php'; ?>
         <?php endif; ?>
 
         <!-- 今日热帖 -->
@@ -288,9 +209,6 @@
 
         <!-- 积分排行 -->
         <?php include APP_PATH . 'resources/views/components/sidebar-credit-rank.php'; ?>
-
-        <!-- 在线用户 -->
-        <?php include APP_PATH . 'resources/views/components/sidebar-online-users.php'; ?>
 
         <!-- 新注册用户 -->
         <?php include APP_PATH . 'resources/views/components/sidebar-new-users.php'; ?>

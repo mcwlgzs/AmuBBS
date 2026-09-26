@@ -1,8 +1,12 @@
 <?php
 namespace App\Services;
 
-use Core\Database;
+use App\Models\CreditLog;
+use App\Models\SiteStat;
+use App\Models\User;
+use App\Models\UserTaskClaim;
 use Core\Cache;
+use Core\Database;
 
 /**
  * 任务中心服务
@@ -75,34 +79,8 @@ class TaskCenterSvc
         $todayStart = strtotime($today);
         $todayEnd = $todayStart + 86400;
 
-        $row = Database::fetchOne("
-            SELECT
-                (SELECT COUNT(*) FROM user_checkins WHERE user_id = ? AND checkin_date = ?) as checkin,
-                (SELECT COUNT(*) FROM threads WHERE user_id = ? AND created_at >= ? AND created_at < ? AND deleted_at IS NULL) as thread,
-                (SELECT COUNT(*) FROM posts WHERE user_id = ? AND created_at >= ? AND created_at < ? AND deleted_at IS NULL) as reply,
-                (SELECT COUNT(*) FROM post_likes WHERE user_id = ? AND created_at >= ? AND created_at < ?) as `like`,
-                (SELECT COUNT(*) FROM moments WHERE user_id = ? AND created_at >= ? AND created_at < ? AND deleted_at IS NULL) as moment,
-                (SELECT COUNT(*) FROM user_follows WHERE user_id = ? AND created_at >= ? AND created_at < ?) as follow,
-                (SELECT COUNT(*) FROM browse_history WHERE user_id = ? AND created_at >= ? AND created_at < ?) as share
-        ", [
-            $userId, $today,
-            $userId, $todayStart, $todayEnd,
-            $userId, $todayStart, $todayEnd,
-            $userId, $todayStart, $todayEnd,
-            $userId, $todayStart, $todayEnd,
-            $userId, $todayStart, $todayEnd,
-            $userId, $todayStart, $todayEnd,
-        ]);
-
-        return [
-            'checkin' => min(1, (int)($row['checkin'] ?? 0)),
-            'thread'  => (int)($row['thread'] ?? 0),
-            'reply'   => (int)($row['reply'] ?? 0),
-            'like'    => (int)($row['like'] ?? 0),
-            'moment'  => (int)($row['moment'] ?? 0),
-            'follow'  => (int)($row['follow'] ?? 0),
-            'share'   => (int)($row['share'] ?? 0),
-        ];
+        // 7 张表的当日计数由 SiteStat 用一条 SQL 取回（拆开就是 7 次往返）
+        return SiteStat::userDailyActivity($userId, $today, $todayStart, $todayEnd);
     }
 
     /**
@@ -124,17 +102,8 @@ class TaskCenterSvc
             return self::$claimCache[$cacheKey];
         }
 
-        $rows = Database::fetchAll(
-            "SELECT task_key FROM user_task_claims WHERE user_id = ? AND claim_date = ?",
-            [$userId, $date]
-        );
-
-        $map = [];
-        foreach ($rows as $row) {
-            $map[$row['task_key']] = true;
-        }
-        self::$claimCache[$cacheKey] = $map;
-        return $map;
+        self::$claimCache[$cacheKey] = UserTaskClaim::claimedKeys($userId, $date);
+        return self::$claimCache[$cacheKey];
     }
 
     /**
@@ -164,18 +133,11 @@ class TaskCenterSvc
         // 记录领取 + 发放积分在同一事务内，避免领取记录已写入但积分未到账
         Database::beginTransaction();
         try {
-            Database::execute(
-                "INSERT INTO user_task_claims (user_id, task_key, credits, claim_date, created_at) VALUES (?, ?, ?, ?, ?)",
-                [$userId, $taskKey, $task['credits'], $today, time()]
-            );
+            UserTaskClaim::insert($userId, $taskKey, (int)$task['credits'], $today, time());
 
             // 直接执行积分操作，避免 addCredits 内部吞掉异常导致领取记录已写入但积分未到账
-            Database::execute("UPDATE users SET credits = credits + ? WHERE id = ?", [$task['credits'], $userId]);
-            $balance = Database::fetchOne("SELECT credits FROM users WHERE id = ?", [$userId])['credits'] ?? 0;
-            Database::execute(
-                "INSERT INTO credit_logs (user_id, amount, balance, type, description, created_at) VALUES (?, ?, ?, ?, ?, ?)",
-                [$userId, $task['credits'], $balance, 'task', '完成任务: ' . $task['name'], time()]
-            );
+            User::addCredits($userId, (int)$task['credits']);
+            CreditLog::write($userId, (int)$task['credits'], User::getCredits($userId), 'task', '完成任务: ' . $task['name'], '', 0, time());
 
             Database::commit();
         } catch (\Throwable $e) {
@@ -212,10 +174,7 @@ class TaskCenterSvc
                 $current = $progress[$key] ?? 0;
                 if ($current >= $task['max'] && !isset($claimed[$key])) {
                     try {
-                        Database::execute(
-                            "INSERT INTO user_task_claims (user_id, task_key, credits, claim_date, created_at) VALUES (?, ?, ?, ?, ?)",
-                            [$userId, $key, $task['credits'], $today, time()]
-                        );
+                        UserTaskClaim::insert($userId, (string)$key, (int)$task['credits'], $today, time());
                         $totalCredits += $task['credits'];
                         $claimedTasks[] = $task['name'];
                     } catch (\Throwable $e) {
@@ -229,12 +188,8 @@ class TaskCenterSvc
 
             // 积分发放在同一事务内，避免领取记录已提交但积分未到账
             if ($totalCredits > 0) {
-                Database::execute("UPDATE users SET credits = credits + ? WHERE id = ?", [$totalCredits, $userId]);
-                $balance = Database::fetchOne("SELECT credits FROM users WHERE id = ?", [$userId])['credits'] ?? 0;
-                Database::execute(
-                    "INSERT INTO credit_logs (user_id, amount, balance, type, description, created_at) VALUES (?, ?, ?, ?, ?, ?)",
-                    [$userId, $totalCredits, $balance, 'task', '批量领取任务奖励', time()]
-                );
+                User::addCredits($userId, $totalCredits);
+                CreditLog::write($userId, $totalCredits, User::getCredits($userId), 'task', '批量领取任务奖励', '', 0, time());
             }
 
             Database::commit();

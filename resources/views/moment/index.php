@@ -9,31 +9,32 @@
     <div class="home-main">
         <!-- 发布动态 -->
         <?php if (isset($_SESSION['user_id'])): ?>
-        <div class="card" x-data="momentForm()">
+        <div class="card">
             <div class="section-title">发布动态</div>
-            <form @submit.prevent="submit">
-                <textarea x-ref="input" x-model="content" class="form-input" rows="3" placeholder="分享你的想法..." maxlength="1000" style="resize:vertical;"></textarea>
-                <div x-show="images.length > 0" style="display:flex;flex-wrap:wrap;gap:8px;margin-top:8px;">
-                    <template x-for="(img, i) in images" :key="i">
-                        <div style="position:relative;width:80px;height:80px;">
-                            <img :src="img" style="width:100%;height:100%;object-fit:cover;border-radius:var(--radius);">
-                            <button type="button" @click="images.splice(i, 1)" style="position:absolute;top:-6px;right:-6px;width:20px;height:20px;border-radius:50%;background:var(--danger);color:#fff;border:none;font-size:12px;cursor:pointer;display:flex;align-items:center;justify-content:center;">&times;</button>
-                        </div>
-                    </template>
-                </div>
+            <?php /* 发布成功由服务端回 HX-Refresh 整页刷新（和迁移前的 location.reload 等价） */ ?>
+            <form hx-post="/moments/create" hx-swap="none" hx-indicator="this" hx-disabled-elt="#momentSubmit">
+                <textarea name="content" id="momentContent" class="form-input" rows="3"
+                          placeholder="分享你的想法..." maxlength="1000" style="resize:vertical;" required></textarea>
+
+                <?php /* 上传成功时服务端只回一个缩略图（内含隐藏的 images[] 字段），append 到这里 */ ?>
+                <div class="moment-thumbs" id="momentThumbs"></div>
+
                 <div style="display:flex;align-items:center;justify-content:space-between;margin-top:10px;">
                     <div style="display:flex;gap:8px;">
                         <label class="btn btn-ghost btn-sm" style="cursor:pointer;gap:4px;">
                             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:16px;height:16px;"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>
                             图片
-                            <input type="file" accept="image/*" multiple style="display:none;" @change="uploadImages($event)">
+                            <input type="file" name="image[]" accept="image/*" multiple style="display:none;"
+                                   hx-post="/thread/upload-image" hx-encoding="multipart/form-data" hx-trigger="change"
+                                   hx-target="#momentThumbs" hx-swap="beforeend">
                         </label>
                     </div>
                     <div style="display:flex;align-items:center;gap:8px;">
-                        <span style="font-size:12px;color:var(--text-muted);" x-text="content.length + '/1000'"></span>
-                        <button type="submit" class="btn btn-primary btn-sm" :disabled="loading || content.length < 1">
-                            <span x-show="!loading">发布</span>
-                            <span x-show="loading">发布中...</span>
+                        <span style="font-size:12px;color:var(--text-muted);"
+                              data-count-for="#momentContent" data-count-max="1000">0/1000</span>
+                        <button type="submit" id="momentSubmit" class="btn btn-primary btn-sm">
+                            <span class="hx-idle">发布</span>
+                            <span class="hx-busy">发布中...</span>
                         </button>
                     </div>
                 </div>
@@ -48,7 +49,8 @@
         </div>
         <?php else: ?>
             <?php foreach ($moments as $moment): ?>
-            <div class="card moment-item" x-data="{ liked: <?= !empty($moment['is_liked']) ? 'true' : 'false' ?>, likes: <?= (int)($moment['likes'] ?? 0) ?>, showComments: false, commentText: '', commentLoading: false, replyUserId: 0, replyName: '' }">
+            <?php $momentId = (int)$moment['id']; ?>
+            <div class="card moment-item" id="moment-<?= $momentId ?>">
                 <div class="moment-header">
                     <a href="/user/<?= (int)$moment['user_id'] ?>">
                         <img src="<?= htmlspecialchars($moment['avatar'] ?: '/assets/images/default-avatar.png') ?>" alt="" class="avatar-sm" loading="lazy">
@@ -61,9 +63,9 @@
                         <span class="moment-time timeago" datetime="<?= date('c', $moment['created_at']) ?>"><?= date('Y-m-d H:i', $moment['created_at']) ?></span>
                     </div>
                     <?php if (isset($_SESSION['user_id']) && ($_SESSION['user_id'] == $moment['user_id'] || ($_SESSION['group_id'] ?? 1) >= 2)): ?>
-                    <button class="btn btn-ghost btn-sm" style="margin-left:auto;font-size:12px;color:var(--text-muted);" @click="
-                        App.confirmPost('/moments/delete', {moment_id:'<?= (int)$moment['id'] ?>'}, '确定删除？').then(d => { if(d && d.success) location.reload(); })
-                    ">删除</button>
+                    <button type="button" class="btn btn-ghost btn-sm" style="margin-left:auto;font-size:12px;color:var(--text-muted);"
+                            hx-post="/moments/delete" hx-vals='{"moment_id":<?= $momentId ?>}'
+                            hx-swap="none" hx-confirm="确定删除？">删除</button>
                     <?php endif; ?>
                 </div>
 
@@ -77,56 +79,32 @@
                 </div>
                 <?php endif; ?>
 
-                <div class="moment-actions">
-                    <?php if (isset($_SESSION['user_id'])): ?>
-                    <button class="moment-action-btn" :class="{ 'is-liked': liked }" @click="
-                        App.post('/moments/like', {moment_id:'<?= (int)$moment['id'] ?>'}, {silent:true}).then(d=>{ if(d.success){ liked=d.liked; likes=d.likes; } })
-                    ">
-                        <svg viewBox="0 0 24 24" :fill="liked ? 'currentColor' : 'none'" stroke="currentColor" stroke-width="2"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/></svg>
-                        <span x-text="likes || ''"></span>
-                    </button>
-                    <button class="moment-action-btn" @click="showComments = !showComments; if(showComments){ replyUserId=0; replyName=''; }">
-                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
-                        <span><?= (int)($moment['comment_count'] ?? 0) ?: '' ?></span>
-                    </button>
-                    <?php else: ?>
-                    <span style="font-size:12px;color:var(--text-muted);">
-                        <svg viewBox="0 0 24 24" fill="currentColor" style="width:14px;height:14px;vertical-align:middle;opacity:.4;"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/></svg>
-                        <?= (int)($moment['likes'] ?? 0) ?: '' ?>
-                    </span>
-                    <?php endif; ?>
-                </div>
+                <?php include APP_PATH . 'resources/views/moment/_actions.php'; ?>
 
-                <!-- 评论区 -->
-                <?php if (!empty($moment['comments'])): ?>
-                <div class="moment-comments">
-                    <?php foreach ($moment['comments'] as $c): ?>
-                    <div class="moment-comment">
-                        <a href="javascript:;" class="moment-comment-author"<?= \App\Services\UserSvc::nicknameStyle($c) ?> <?php if (isset($_SESSION['user_id'])): ?>@click="replyUserId=<?= (int)$c['user_id'] ?>; replyName='<?= htmlspecialchars(($c['nickname'] ?? '') ?: $c['username'], ENT_QUOTES) ?>'; showComments=true; $nextTick(()=>$refs.commentInput_<?= (int)$moment['id'] ?>?.focus())"<?php endif; ?>><?= htmlspecialchars(($c['nickname'] ?? '') ?: $c['username']) ?></a>
-                        <?php if (!empty($c['reply_username'])): ?>
-                        <span style="color:var(--text-muted);">回复</span>
-                        <a href="/user/<?= (int)$c['reply_user_id'] ?>" class="moment-comment-author"<?= \App\Services\UserSvc::nicknameStyle(['nickname_color' => $c['reply_nickname_color'] ?? null]) ?>><?= htmlspecialchars(($c['reply_nickname'] ?? '') ?: $c['reply_username']) ?></a>
-                        <?php endif; ?>
-                        <span class="moment-comment-text"><?= htmlspecialchars($c['content']) ?></span>
-                    </div>
-                    <?php endforeach; ?>
-                </div>
-                <?php endif; ?>
+                <?php
+                /* 评论区：顶层评论 + 其回复（只有一层嵌套）。
+                   整块交给 _comments.php 渲染——「查看全部 N 条评论」的 htmx 片段与整页共用同一份模板。
+                   没有评论时加 is-empty（CSS 隐藏），这样 htmx beforeend 追加第一条评论后能自动显形。 */
+                $comments        = $moment['comments'] ?? [];
+                $commentTotal    = (int)($moment['comment_total'] ?? $moment['comment_count'] ?? 0);
+                $commentsHasMore = !empty($moment['comments_has_more']);
+                $expanded        = false;
+                ?>
+                <div class="moment-comments<?= $comments ? '' : ' is-empty' ?>" id="momentComments-<?= $momentId ?>"><?php include APP_PATH . 'resources/views/moment/_comments.php'; ?></div>
 
-                <!-- 评论输入 -->
                 <?php if (isset($_SESSION['user_id'])): ?>
-                <div x-show="showComments" x-cloak class="moment-comment-form">
-                    <div x-show="replyUserId > 0" style="font-size:12px;color:var(--text-muted);margin-bottom:4px;">
-                        回复 <span x-text="replyName"></span>
-                        <a href="javascript:;" @click="replyUserId=0;replyName=''" style="margin-left:6px;color:var(--primary);">取消</a>
+                <?php /* 顶层评论框：默认隐藏，点「评论」按钮由 [data-toggle-target] 显示；回车即提交 */ ?>
+                <div class="moment-comment-form" id="momentCommentForm-<?= $momentId ?>" hidden>
+                    <div data-reply-indicator hidden style="font-size:12px;color:var(--text-muted);margin-bottom:4px;">
+                        回复 <span data-reply-name></span>
+                        <a href="javascript:;" data-reply-cancel style="margin-left:6px;color:var(--primary);">取消</a>
                     </div>
-                    <input type="text" x-model="commentText" x-ref="commentInput_<?= (int)$moment['id'] ?>" class="form-input" :placeholder="replyUserId > 0 ? '回复 ' + replyName + '...' : '写评论...'" maxlength="500" @keydown.enter="
-                        if(commentText.trim().length < 1) return;
-                        commentLoading = true;
-                        App.post('/moments/comment', {moment_id:'<?= (int)$moment['id'] ?>',content:commentText,reply_user_id:replyUserId}, {silent:true})
-                        .then(d=>{ if(d.success){ location.reload(); } else { toast(d.message,'error'); } })
-                        .finally(()=>commentLoading=false)
-                    ">
+                    <form hx-post="/moments/comment" hx-target="#momentComments-<?= $momentId ?>" hx-swap="beforeend"
+                          hx-indicator="this" data-reply-form-target>
+                        <input type="hidden" name="moment_id" value="<?= $momentId ?>">
+                        <input type="hidden" name="reply_user_id" value="" data-reply-input>
+                        <input type="text" name="content" class="form-input" placeholder="写评论..." maxlength="500" required>
+                    </form>
                 </div>
                 <?php endif; ?>
             </div>
@@ -149,33 +127,5 @@
         <?php include APP_PATH . 'resources/views/components/sidebar-credit-rank.php'; ?>
     </div>
 </div>
-
-<script>
-function momentForm() {
-    return {
-        content: '', images: [], loading: false,
-        async uploadImages(e) {
-            const files = e.target.files;
-            if (!files.length) return;
-            for (let f of files) {
-                if (this.images.length >= 9) break;
-                const fd = new FormData(); fd.append('image', f);
-                const data = await App.upload('/thread/upload-image', fd, { silent: true });
-                if (data.success) this.images.push(data.data.url);
-                else toast(data.message || '上传失败', 'error');
-            }
-            e.target.value = '';
-        },
-        async submit() {
-            if (this.content.length < 1) return;
-            this.loading = true;
-            const data = await App.post('/moments/create', { content: this.content, images: this.images.join(',') }, { silent: true });
-            if (data.success) { toast('发布成功', 'success'); setTimeout(() => location.reload(), 600); }
-            else toast(data.message || '发布失败', 'error');
-            this.loading = false;
-        }
-    }
-}
-</script>
 
 <?php include APP_PATH . 'resources/views/layout/footer.php'; ?>

@@ -5,14 +5,20 @@
 
 namespace App\Services;
 
-use App\Repositories\UserRepo;
-use App\Repositories\ThreadRepo;
+use App\Models\Attachment;
+use App\Models\Checkin;
+use App\Models\Favorite;
+use App\Models\Follow;
+use App\Models\Forum;
+use App\Models\Notification;
+use App\Models\Post;
+use App\Models\PostLike;
+use App\Models\Thread;
+use App\Models\User;
 use Core\Cache;
 
 class UserSvc
 {
-    private UserRepo $userRepo;
-
     /** 请求级实体缓存，避免同一请求内重复查库 */
     private static array $entityCache = [];
 
@@ -40,11 +46,6 @@ class UserSvc
             return '';
         }
         return ' style="color:' . htmlspecialchars($color) . ';"';
-    }
-
-    public function __construct()
-    {
-        $this->userRepo = new UserRepo();
     }
 
     /**
@@ -95,11 +96,11 @@ class UserSvc
         }
 
         // 唯一性检查
-        if ($this->userRepo->findByUsername($username)) {
+        if (User::findByUsername($username)) {
             throw new \RuntimeException('用户名已存在');
         }
 
-        if ($this->userRepo->findByEmail($email)) {
+        if (User::findByEmail($email)) {
             throw new \RuntimeException('邮箱已被注册');
         }
 
@@ -109,7 +110,7 @@ class UserSvc
         $defaultAvatar = SettingSvc::get('user_default_avatar', '') ?: '/assets/images/default-avatar.png';
         $hashedPassword = password_hash($password, PASSWORD_BCRYPT);
 
-        return $this->userRepo->create($username, $email, $hashedPassword, $defaultGroup, $defaultCredits, $nickname, $defaultAvatar);
+        return User::create($username, $email, $hashedPassword, $defaultGroup, $defaultCredits, $nickname, $defaultAvatar);
     }
 
     /**
@@ -131,31 +132,46 @@ class UserSvc
             throw new \RuntimeException('请填写用户名和密码');
         }
 
-        // 登录失败次数限制
-        $maxAttempts = SettingSvc::getInt('user_login_max_attempts', 5);
+        // 登录失败次数限制：IP + 账号 双维度
+        // 只按 IP 计数时，攻击者换 IP 就能继续爆破同一个账号；
+        // 只按账号计数时，又会被人拿来锁死别人的账号（所以两个维度都要有，且都要原子递增）。
+        $maxAttempts = max(1, SettingSvc::getInt('user_login_max_attempts', 5));
         $lockMinutes = SettingSvc::getInt('user_login_lock_minutes', 30);
-        $cacheKey = "login:attempts:{$ip}";
+        $window = $lockMinutes * 60;
+        $ipKey = 'login:attempts:ip:' . md5($ip);
+        // 用哈希而不是明文用户名，避免缓存键名里出现用户输入
+        $accountKey = 'login:attempts:user:' . md5(mb_strtolower(trim($identity)));
 
-        $attempts = (int)(Cache::get($cacheKey) ?? 0);
-        if ($attempts >= $maxAttempts) {
+        if ($this->tooManyLoginAttempts($ipKey, $maxAttempts)
+            || $this->tooManyLoginAttempts($accountKey, $maxAttempts)) {
             throw new \RuntimeException("登录失败次数过多，请 {$lockMinutes} 分钟后再试");
         }
 
-        $user = $this->userRepo->findByUsernameOrEmail($identity);
+        $user = User::findByUsernameOrEmail($identity);
 
         if (!$user || !password_verify($password, $user['password'])) {
-            // 记录失败次数
-            Cache::set($cacheKey, $attempts + 1, $lockMinutes * 60);
+            // 原子递增（原来的 read-modify-write 在并发下会丢计数）
+            Cache::incrementWithLimit($ipKey, $maxAttempts, $window);
+            Cache::incrementWithLimit($accountKey, $maxAttempts, $window);
             throw new \RuntimeException('用户名或密码错误');
         }
 
         // 登录成功，清除失败计数
-        Cache::delete($cacheKey);
+        Cache::delete($ipKey);
+        Cache::delete($accountKey);
 
         // 更新登录信息
-        $this->userRepo->updateLoginInfo($user['id'], $ip);
+        User::updateLoginInfo($user['id'], $ip);
 
         return $user;
+    }
+
+    /**
+     * 登录失败次数是否已达上限
+     */
+    private function tooManyLoginAttempts(string $key, int $maxAttempts): bool
+    {
+        return (int)(Cache::get($key) ?? 0) >= $maxAttempts;
     }
 
     /**
@@ -169,7 +185,7 @@ class UserSvc
         }
 
         $profile = Cache::get("user:profile:{$userId}", function () use ($userId) {
-            $profile = $this->userRepo->getProfile($userId);
+            $profile = User::getProfile($userId);
             if ($profile) {
                 // 添加等级信息
                 $credits = (int)($profile['credits'] ?? 0);
@@ -233,14 +249,11 @@ class UserSvc
      */
     public function getUserThreads(int $userId, int $perPage = 10, int $page = 1): array
     {
-        $threadRepo = new ThreadRepo();
+        
         $page = max(1, $page);
         $offset = ($page - 1) * $perPage;
-        $threads = $threadRepo->getByUser($userId, $perPage, $offset);
-        $total = \Core\Database::fetchOne(
-            "SELECT COUNT(*) as c FROM threads WHERE user_id = ? AND deleted_at IS NULL",
-            [$userId]
-        )['c'] ?? 0;
+        $threads = Thread::getByUser($userId, $perPage, $offset);
+        $total = Thread::countByUser($userId);
         return [
             'threads' => $threads,
             'total' => (int)$total,
@@ -254,14 +267,7 @@ class UserSvc
      */
     public function getUserReplies(int $userId, int $limit = 10): array
     {
-        return \Core\Database::fetchAll("
-            SELECT p.*, t.title as thread_title
-            FROM posts p
-            LEFT JOIN threads t ON p.thread_id = t.id
-            WHERE p.user_id = ? AND p.deleted_at IS NULL
-            ORDER BY p.created_at DESC
-            LIMIT ?
-        ", [$userId, $limit]);
+        return Post::listByUserWithThread($userId, $limit);
     }
 
     /**
@@ -269,7 +275,7 @@ class UserSvc
      */
     public function incrementThreadCount(int $userId): void
     {
-        $this->userRepo->incrementThreadCount($userId);
+        User::incrementThreadCount($userId);
         Cache::delete("user:profile:{$userId}");
         self::clearEntityCache($userId);
     }
@@ -279,7 +285,7 @@ class UserSvc
      */
     public function incrementPostCount(int $userId): void
     {
-        $this->userRepo->incrementPostCount($userId);
+        User::incrementPostCount($userId);
         Cache::delete("user:profile:{$userId}");
         self::clearEntityCache($userId);
     }
@@ -289,7 +295,7 @@ class UserSvc
      */
     public function decrementThreadCount(int $userId): void
     {
-        $this->userRepo->decrementThreadCount($userId);
+        User::decrementThreadCount($userId);
         Cache::delete("user:profile:{$userId}");
         self::clearEntityCache($userId);
     }
@@ -299,7 +305,7 @@ class UserSvc
      */
     public function decrementPostCount(int $userId): void
     {
-        $this->userRepo->decrementPostCount($userId);
+        User::decrementPostCount($userId);
         Cache::delete("user:profile:{$userId}");
         self::clearEntityCache($userId);
     }
@@ -363,7 +369,7 @@ class UserSvc
 
         // 更新数据库
         $avatarUrl = '/uploads/avatars/' . $filename;
-        $this->userRepo->updateAvatar($userId, $avatarUrl);
+        User::updateAvatar($userId, $avatarUrl);
         Cache::delete("user:profile:{$userId}");
         self::clearEntityCache($userId);
 
@@ -379,7 +385,7 @@ class UserSvc
     {
         // 检查是否允许修改邮箱
         if (!SettingSvc::getBool('user_allow_change_email', true)) {
-            $currentUser = $this->userRepo->findById($userId);
+            $currentUser = User::findById($userId);
             if ($currentUser && $currentUser['email'] !== $email) {
                 throw new \RuntimeException('不允许修改邮箱地址');
             }
@@ -401,12 +407,12 @@ class UserSvc
         $nickname = $this->validateNickname($nickname, $userId);
 
         // 检查邮箱是否被其他用户占用
-        $existUser = $this->userRepo->findByEmail($email);
+        $existUser = User::findByEmail($email);
         if ($existUser && (int)$existUser['id'] !== $userId) {
             throw new \RuntimeException('该邮箱已被其他用户使用');
         }
 
-        $this->userRepo->updateProfile($userId, $email, $signature, $nickname);
+        User::updateProfile($userId, $email, $signature, $nickname);
         Cache::delete("user:profile:{$userId}");
         self::clearEntityCache($userId);
     }
@@ -424,7 +430,7 @@ class UserSvc
             throw new \RuntimeException('两次密码不一致');
         }
 
-        $user = $this->userRepo->findById($userId);
+        $user = User::findById($userId);
         if (!$user) {
             throw new \RuntimeException('用户不存在');
         }
@@ -434,16 +440,13 @@ class UserSvc
         }
 
         $hashedPassword = password_hash($newPassword, PASSWORD_BCRYPT);
-        $this->userRepo->updatePassword($userId, $hashedPassword);
+        User::updatePassword($userId, $hashedPassword);
 
         // 密码修改后清除 Remember Me token
         \Core\RememberToken::clear($userId);
 
-        // 销毁该用户的其他 session，防止旧会话继续使用
-        $currentSessionId = session_id();
-        if ($currentSessionId) {
-            \Core\Database::execute("DELETE FROM sessions WHERE user_id = ? AND id != ?", [$userId, $currentSessionId]);
-        }
+        // 说明：原本这里 DELETE FROM sessions 想踢掉其它设备，但真实 session 在文件 / Redis 里，
+        // 该表只是旧在线统计的镜像（已随该功能移除），因此那条语句实际不产生任何效果。
         session_regenerate_id(true);
     }
 
@@ -453,7 +456,7 @@ class UserSvc
      */
     public function deleteUser(int $userId): void
     {
-        $user = $this->userRepo->findById($userId);
+        $user = User::findById($userId);
         if (!$user) {
             throw new \RuntimeException('用户不存在');
         }
@@ -462,24 +465,16 @@ class UserSvc
 
         try {
             // 1. 软删除用户
-            $this->userRepo->softDelete($userId);
+            User::softDelete($userId);
 
             // 2. 软删除用户的帖子，并批量更新板块统计
-            $threads = \Core\Database::fetchAll(
-                "SELECT id, forum_id, reply_count FROM threads WHERE user_id = ? AND deleted_at IS NULL",
-                [$userId]
-            );
+            $threads = Thread::rowsForUserDeletion($userId);
             $deletedThreads = count($threads);
             $deletedPosts = 0;
 
             if ($deletedThreads > 0) {
                 // 批量软删除帖子
-                $threadIds = array_column($threads, 'id');
-                $ph = implode(',', array_fill(0, count($threadIds), '?'));
-                \Core\Database::execute(
-                    "UPDATE threads SET deleted_at = ? WHERE id IN ({$ph})",
-                    array_merge([time()], $threadIds)
-                );
+                Thread::softDeleteByIds(array_column($threads, 'id'), time());
 
                 // 按板块聚合 thread_count 和 reply_count（post_count）
                 $forumThreadDec = [];
@@ -494,49 +489,16 @@ class UserSvc
                     }
                 }
 
-                // 批量 CASE WHEN 更新板块 thread_count
-                $allFids = array_unique(array_merge(array_keys($forumThreadDec), array_keys($forumPostDec)));
-                $cases = [];
-                $params = [];
-                foreach ($allFids as $fid) {
-                    $dec = $forumThreadDec[$fid] ?? 0;
-                    $cases[] = "WHEN id = ? THEN CASE WHEN thread_count >= ? THEN thread_count - ? ELSE 0 END";
-                    $params[] = $fid;
-                    $params[] = $dec;
-                    $params[] = $dec;
-                }
-                $caseStr = implode(' ', $cases);
-                $postCases = [];
-                foreach ($allFids as $fid) {
-                    $dec = $forumPostDec[$fid] ?? 0;
-                    $postCases[] = "WHEN id = ? THEN CASE WHEN post_count >= ? THEN post_count - ? ELSE 0 END";
-                    $params[] = $fid;
-                    $params[] = $dec;
-                    $params[] = $dec;
-                }
-                $postCaseStr = implode(' ', $postCases);
-                $fidPh = implode(',', array_fill(0, count($allFids), '?'));
-                $params = array_merge($params, $allFids);
-                \Core\Database::execute(
-                    "UPDATE forums SET thread_count = CASE {$caseStr} ELSE thread_count END, post_count = CASE {$postCaseStr} ELSE post_count END WHERE id IN ({$fidPh})",
-                    $params
-                );
+                // 一次 CASE WHEN 更新板块的 thread_count 与 post_count
+                Forum::decrementCountsBulk($forumThreadDec, $forumPostDec);
             }
 
             // 3. 软删除用户的回复，并批量更新帖子回复数和板块统计
-            $posts = \Core\Database::fetchAll(
-                "SELECT p.id, p.thread_id, t.forum_id FROM posts p LEFT JOIN threads t ON p.thread_id = t.id WHERE p.user_id = ? AND p.deleted_at IS NULL",
-                [$userId]
-            );
+            $posts = Post::rowsForUserDeletion($userId);
 
             if (!empty($posts)) {
                 // 批量软删除回复
-                $postIds = array_column($posts, 'id');
-                $ph = implode(',', array_fill(0, count($postIds), '?'));
-                \Core\Database::execute(
-                    "UPDATE posts SET deleted_at = ? WHERE id IN ({$ph})",
-                    array_merge([time()], $postIds)
-                );
+                Post::softDeleteByIds(array_column($posts, 'id'), time());
                 $deletedPosts += count($posts);
 
                 // 按 thread_id 聚合回复数扣减
@@ -552,51 +514,23 @@ class UserSvc
                 }
 
                 // 批量更新 threads.reply_count
-                $cases = [];
-                $params = [];
-                foreach ($threadDec as $tid => $dec) {
-                    $cases[] = "WHEN id = ? THEN CASE WHEN reply_count >= ? THEN reply_count - ? ELSE 0 END";
-                    $params[] = $tid;
-                    $params[] = $dec;
-                    $params[] = $dec;
-                }
-                $caseStr = implode(' ', $cases);
-                $tidPh = implode(',', array_fill(0, count($threadDec), '?'));
-                $params = array_merge($params, array_keys($threadDec));
-                \Core\Database::execute(
-                    "UPDATE threads SET reply_count = CASE {$caseStr} ELSE reply_count END WHERE id IN ({$tidPh})",
-                    $params
-                );
+                Thread::decrementReplyCountBulk($threadDec);
 
                 // 批量更新 forums.post_count
                 if (!empty($forumPostDec2)) {
-                    $cases = [];
-                    $params = [];
-                    foreach ($forumPostDec2 as $fid => $dec) {
-                        $cases[] = "WHEN id = ? THEN CASE WHEN post_count >= ? THEN post_count - ? ELSE 0 END";
-                        $params[] = $fid;
-                        $params[] = $dec;
-                        $params[] = $dec;
-                    }
-                    $caseStr = implode(' ', $cases);
-                    $fidPh = implode(',', array_fill(0, count($forumPostDec2), '?'));
-                    $params = array_merge($params, array_keys($forumPostDec2));
-                    \Core\Database::execute(
-                        "UPDATE forums SET post_count = CASE {$caseStr} ELSE post_count END WHERE id IN ({$fidPh})",
-                        $params
-                    );
+                    Forum::decrementCountsBulk([], $forumPostDec2);
                 }
             }
 
             // 4. 清理关联数据
-            \Core\Database::execute("DELETE FROM user_favorites WHERE user_id = ?", [$userId]);
-            \Core\Database::execute("DELETE FROM user_follows WHERE user_id = ? OR follow_user_id = ?", [$userId, $userId]);
-            \Core\Database::execute("DELETE FROM notifications WHERE user_id = ? OR from_user_id = ?", [$userId, $userId]);
-            \Core\Database::execute("DELETE FROM post_likes WHERE user_id = ?", [$userId]);
-            \Core\Database::execute("DELETE FROM user_checkins WHERE user_id = ?", [$userId]);
+            Favorite::deleteByUser($userId);
+            Follow::deleteByUser($userId);
+            Notification::deleteByUser($userId);
+            PostLike::deleteByUser($userId);
+            Checkin::deleteByUser($userId);
 
             // 5. 清理附件文件记录（物理文件由定时任务清理）
-            \Core\Database::execute("UPDATE attachments SET deleted_at = ? WHERE user_id = ? AND deleted_at IS NULL", [time(), $userId]);
+            Attachment::softDeleteByUser($userId, time());
 
             \Core\Database::commit();
         } catch (\Throwable $e) {
@@ -638,7 +572,7 @@ class UserSvc
         }
 
         // 唯一性检查
-        $exist = $this->userRepo->findByNickname($nickname);
+        $exist = User::findByNickname($nickname);
         if ($exist && (int)$exist['id'] !== $excludeUserId) {
             throw new \RuntimeException('该昵称已被使用');
         }

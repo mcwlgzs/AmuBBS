@@ -2,11 +2,11 @@
 
 # AMuBBS
 
-**A lightweight, high-performance forum system built with PHP 8.2 from scratch.**
+**A lightweight, high-performance forum system built with PHP 8 from scratch.**
 
-[![PHP 8.2+](https://img.shields.io/badge/PHP-8.2+-8892BF?style=for-the-badge&logo=php&logoColor=white)](https://php.net)
-[![MySQL 8.0+](https://img.shields.io/badge/MySQL-8.0+-4479A1?style=for-the-badge&logo=mysql&logoColor=white)](https://mysql.com)
-[![Redis 7.0+](https://img.shields.io/badge/Redis-7.0+-DC382D?style=for-the-badge&logo=redis&logoColor=white)](https://redis.io)
+[![PHP 8.0+](https://img.shields.io/badge/PHP-8.0%2B-8892BF?style=for-the-badge&logo=php&logoColor=white)](https://php.net)
+[![MySQL 5.6+](https://img.shields.io/badge/MySQL-5.6%2B-4479A1?style=for-the-badge&logo=mysql&logoColor=white)](https://mysql.com)
+[![Redis Optional](https://img.shields.io/badge/Redis-Optional-DC382D?style=for-the-badge&logo=redis&logoColor=white)](https://redis.io)
 [![License MIT](https://img.shields.io/badge/License-MIT-green?style=for-the-badge)](./LICENSE)
 
 [中文](./README.md) | English
@@ -41,11 +41,11 @@ Most forum systems are bloated with dependencies and slow by default. AMuBBS tak
 
 ```
 Backend                          Frontend
-├── PHP 8.2+ (OPcache + JIT)    ├── Alpine.js (15KB, zero build)
-├── MySQL 8.0+ (InnoDB, FTS)    └── Layui (Admin UI)
-├── Redis 7.0+ (multi-level)
-└── Nginx + PHP-FPM              Architecture
-                                  └── Controller → Service → Repository
+├── PHP 8.0+ (OPcache)           ├── htmx 2.0.11 + hand-written CSS (zero build)
+├── MySQL 5.6+ / MariaDB 10+     └── layuimini v2 + Layui 2.6.3 (admin, iframe tabs)
+├── Cache: file (default) or Redis (optional)
+└── Nginx / Apache / shared host   Architecture
+                                   └── Controller + Service + Model
 ```
 
 ### Features
@@ -57,7 +57,7 @@ Backend                          Frontend
 **Community**
 - Multi-forum management with permissions
 - Threads & replies with sticky/highlight/lock
-- Markdown + TinyMCE dual editors
+- Markdown editor (no third-party rich-text dependency)
 - Image upload & fulltext search
 - Paid content & tag system
 
@@ -108,7 +108,8 @@ git clone https://github.com/mcwlgzs/AMuBBS.git && cd AMuBBS
 
 # 2. Configure
 cp .env.example .env
-# Edit .env with your database and Redis credentials
+# Edit .env with your database credentials
+# No Redis? Keep CACHE_DRIVER=auto and the file cache is used automatically
 
 # 3. Database
 mysql -u root -p -e "CREATE DATABASE amubbs DEFAULT CHARSET utf8mb4 COLLATE utf8mb4_unicode_ci;"
@@ -129,22 +130,30 @@ php -S localhost:8000 -t public public/router.php
 <summary><b>.env reference</b></summary>
 
 ```ini
-APP_MODE=single              # single | distributed
-APP_DEBUG=false
+APP_DEBUG=false              # debug mode
 APP_URL=http://localhost:8000
+APP_KEY=                     # signing key for remember-me / admin API tokens
+                             # generate: php -r "echo bin2hex(random_bytes(32));"
 
 DB_HOST=127.0.0.1
 DB_DATABASE=amubbs
 DB_USERNAME=root
 DB_PASSWORD=
+# Optional read replicas (reads fall back to the primary when unset)
+# DB_READ_HOST=192.168.1.202,192.168.1.203
 
-REDIS_HOST=127.0.0.1
+REDIS_HOST=127.0.0.1         # optional: file cache is used when Redis is absent
 REDIS_PORT=6379
 
-SESSION_DRIVER=file          # file | redis
-CACHE_DRIVER=redis           # redis | file
-UPLOAD_DRIVER=local          # local | oss | nfs
+SESSION_DRIVER=file          # file (default) | redis (needed to share logins across nodes)
+CACHE_DRIVER=auto            # auto (recommended) | file | redis
+
+# Uploads always go to public/uploads/. For multiple web nodes, share that
+# directory (NFS or a hosting-panel shared folder); there is no OSS driver.
 ```
+
+> Every key above is actually read by the code — `php scripts/check_env.php` keeps
+> `.env.example` and the code in sync so no "documented but ignored" config can creep back.
 
 </details>
 
@@ -153,45 +162,71 @@ UPLOAD_DRIVER=local          # local | oss | nfs
 ```
 AMuBBS/
 ├── app/                         # Application layer
-│   ├── Controllers/             #   18 frontend + 17 admin controllers
-│   ├── Services/                #   27 business logic services
-│   ├── Repositories/            #   Data access layer
-│   ├── Middlewares/              #   Auth, CSRF, RateLimit, RunLevel
-│   ├── Events/                  #   Event definitions
+│   ├── Controllers/             #   17 frontend + 16 admin controllers
+│   ├── Services/                #   26 services (rules, transactions, audit logs)
+│   ├── Models/                  #   40 models (SQL + row-cache invalidation)
+│   ├── Middlewares/             #   Auth, CSRF, RateLimit, RunLevel
+│   ├── Events/                  #   30 event constants
 │   └── Listeners/               #   Event listeners
-├── core/                        # Custom micro-framework (28 classes)
+├── core/                        # Custom micro-framework (24 classes)
 ├── config/                      # Configuration files
-├── plugins/                     # Plugin directory
-├── resources/views/             # View templates
+├── plugins/                     # Plugins (enable/disable from the admin panel)
+├── resources/views/             # View templates (103 files)
 ├── public/                      # Web root (single entry point)
-├── storage/                     # Runtime (logs, cache, sessions)
-├── install/                     # Installer & database schema (30 tables)
-└── docs/                        # Documentation (12 articles)
+├── storage/                     # Runtime (cache, logs, sessions, plugin_config)
+├── install/                     # Installer & database schema (39 tables)
+├── scripts/                     # Verification (smoke + self-tests + 5 static checkers)
+└── docs/                        # Documentation (16 articles)
 ```
 
 ### Plugins
 
-AMuBBS ships with 4 built-in plugins:
+Plugins use **WordPress-style hooks**: they hook into events the core already fires with
+`add_action()` / `add_filter()` — no Composer, no core patches.
 
-| Plugin | Description |
+- Enable/disable/uninstall from **System → Plugins** in the admin panel;
+  the state lives in `storage/plugin_config/plugins.json`.
+- `install()` runs once on first enable, `uninstall()` on uninstall (both optional).
+- A broken plugin is logged and skipped — it can never white-screen the site.
+
+The functionality usually packaged as plugins still ships as core services:
+
+| Built-in service | Description |
 |:-------|:------------|
-| `AutoAvatar` | Assigns random avatars on registration (57 built-in) |
-| `Emoji` | Emoji shortcode parsing (`:name:` syntax) |
-| `SocialLogin` | OAuth login — GitHub / Google / WeChat / QQ |
-| `TinymceEditor` | Rich text editor as Markdown alternative |
+| `AutoAvatarService` | Assigns random avatars on registration |
+| `EmojiService` | Emoji shortcode parsing (`:name:` syntax) |
+| `SocialLoginService` | OAuth login — GitHub / Google / WeChat / QQ |
 
 <details>
 <summary><b>Creating your own plugin</b></summary>
 
 ```
 plugins/MyPlugin/
-├── MyPluginPlugin.php       # Main class (required)
-├── plugin.json              # Metadata (required)
-├── config.php               # Default config (optional)
-└── assets/                  # Static files (optional)
+├── Plugin.php               # Main class (required, implements Core\PluginInterface)
+├── plugin.json              # Metadata (name / title / version / entry / class)
+└── assets/                  # Static files (optional, served via /plugin-assets/MyPlugin/...)
 ```
 
-See [`docs/10-插件开发.md`](./docs/10-插件开发.md) for the full plugin development guide.
+```php
+<?php
+namespace Plugins\MyPlugin;
+
+use Core\PluginInterface;
+
+class Plugin implements PluginInterface
+{
+    public function register(): void
+    {
+        add_filter('thread.title', fn(string $t) => $t . ' [MyPlugin]');
+        add_action('thread.created', function (array $data) {
+            // ['thread_id' => ..., 'forum_id' => ..., 'user_id' => ..., 'username' => ...]
+        });
+    }
+}
+```
+
+See [`docs/10-插件开发.md`](./docs/10-插件开发.md) for the author guide and
+[`docs/08-插件系统.md`](./docs/08-插件系统.md) for the implementation.
 
 </details>
 
@@ -275,13 +310,22 @@ git commit -m 'feat: describe your change'
 git push origin feature/your-feature
 ```
 
+**Run the verification suite before committing** (syntax + 7 static checkers + 3 self-tests + 125 smoke
+checks). It must be green **without Redis**:
+
+```bash
+bash scripts/verify.sh          # Linux / macOS / CI
+powershell scripts/verify.ps1   # Windows
+```
+
 ## 🗺️ Roadmap
 
 All features have been completed!
 
 ### License
 
-[MIT](./LICENSE) — use it however you like.
+**Non-commercial use only** — see [LICENSE](./LICENSE). Commercial use requires written permission;
+you may not remove the copyright notice.
 
 ---
 

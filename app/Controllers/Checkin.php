@@ -5,14 +5,19 @@
 
 namespace App\Controllers;
 
-use Core\Database;
-use Core\Cache;
+use App\Models\Checkin as CheckinModel;
+use App\Models\User;
 use App\Services\CreditSvc;
+use App\Services\VipSvc;
+use Core\Database;
 
 class Checkin extends Base
 {
     /**
      * 签到
+     *
+     * 事务边界留在控制器：它包住的不只是签到表，还有 CreditSvc 发积分（写 credit_logs + users.credits），
+     * 属于跨表的业务编排，不适合塞进只负责 SQL 的模型。
      */
     public function checkin(): void
     {
@@ -20,35 +25,40 @@ class Checkin extends Base
         $userId = $this->getCurrentUserId();
         $today = date('Y-m-d');
 
-        // 检查今日是否已签到
-        $key = "checkin:{$userId}:{$today}";
-        if (Cache::get($key)) {
+        // 检查今日是否已签到（先看缓存）
+        $cached = CheckinModel::cachedToday($userId, $today);
+        if ($cached) {
+            // htmx：把卡片刷成「今日已签到」就行（卡片本身就是反馈，不用再弹提示）
+            if ($this->isHtmx()) {
+                $this->renderCheckinCard(
+                    true,
+                    (int)($cached['credits'] ?? 0),
+                    (int)($cached['consecutive_days'] ?? 0)
+                );
+                return;
+            }
             $this->error('今日已签到');
             return;
         }
 
-        try {
-            Database::beginTransaction();
+        $credits = 0;
+        $consecutiveDays = 0;
+        $existingRow = null;
 
-            try {
+        try {
+            Database::transaction(function () use ($userId, $today, &$credits, &$consecutiveDays, &$existingRow): void {
                 // 检查数据库（事务内加锁防止并发重复签到）
-                $existing = Database::fetchOne(
-                    "SELECT id, credits, consecutive_days FROM user_checkins WHERE user_id = ? AND checkin_date = ? FOR UPDATE",
-                    [$userId, $today]
-                );
+                $existing = CheckinModel::lockedToday($userId, $today);
                 if ($existing) {
-                    Database::commit();
-                    Cache::set($key, $existing, 86400);
-                    $this->error('今日已签到');
+                    $existingRow = $existing;
+                    $credits = (int)($existing['credits'] ?? 0);
+                    $consecutiveDays = (int)($existing['consecutive_days'] ?? 0);
                     return;
                 }
 
                 // 计算连续签到天数
                 $yesterday = date('Y-m-d', strtotime('-1 day'));
-                $lastCheckin = Database::fetchOne(
-                    "SELECT checkin_date, consecutive_days FROM user_checkins WHERE user_id = ? ORDER BY checkin_date DESC LIMIT 1",
-                    [$userId]
-                );
+                $lastCheckin = CheckinModel::lastCheckin($userId);
 
                 $consecutiveDays = 1;
                 if ($lastCheckin && $lastCheckin['checkin_date'] === $yesterday) {
@@ -64,30 +74,37 @@ class Checkin extends Base
                 }
 
                 // VIP 积分倍率
-                $multiplier = \App\Services\VipSvc::getCheckinMultiplier($userId);
-                $credits = (int)round($credits * $multiplier);
+                $credits = (int)round($credits * VipSvc::getCheckinMultiplier($userId));
 
                 // 记录签到
-                Database::execute(
-                    "INSERT INTO user_checkins (user_id, checkin_date, consecutive_days, credits, created_at) VALUES (?, ?, ?, ?, ?)",
-                    [$userId, $today, $consecutiveDays, $credits, time()]
-                );
+                CheckinModel::create($userId, $today, $consecutiveDays, $credits);
 
                 // 积分发放放在事务内，保证签到记录和积分一致性
                 $creditSvc = new CreditSvc();
-                $ok = $creditSvc->addCredits($userId, $credits, 'checkin', "每日签到（连续{$consecutiveDays}天）");
-                if (!$ok) {
+                if (!$creditSvc->addCredits($userId, $credits, 'checkin', "每日签到（连续{$consecutiveDays}天）")) {
                     throw new \RuntimeException('积分发放失败');
                 }
+            });
 
-                Database::commit();
-            } catch (\Throwable $e) {
-                Database::rollBack();
-                throw $e;
+            if ($existingRow !== null) {
+                // 缓存写在事务提交之后：万一提交失败，缓存不该提前留下「已签到」
+                CheckinModel::rememberRow($userId, $today, $existingRow);
+                if ($this->isHtmx()) {
+                    $this->renderCheckinCard(true, $credits, $consecutiveDays);
+                    return;
+                }
+                $this->error('今日已签到');
+                return;
             }
 
-            Cache::delete("user:profile:{$userId}");
-            Cache::set($key, ['id' => 1, 'credits' => $credits, 'consecutive_days' => $consecutiveDays], 86400);
+            User::forgetUserCaches($userId);
+            CheckinModel::rememberToday($userId, $today, $credits, $consecutiveDays);
+
+            if ($this->isHtmx()) {
+                // 回刷新后的签到卡片（首页 hx-target="#checkinCard" 替换它）
+                $this->renderCheckinCard(true, $credits, $consecutiveDays);
+                return;
+            }
 
             $this->success('签到成功', [
                 'credits' => $credits,
@@ -95,8 +112,22 @@ class Checkin extends Base
             ]);
         } catch (\Throwable $e) {
             error_log('[Checkin] ' . $e->getMessage());
-            $this->error('签到失败，请稍后重试');
+            $this->respondFragment(false, '签到失败，请稍后重试', static function (): void {});
             return;
         }
+    }
+
+    /**
+     * 渲染签到卡片片段
+     *
+     * 首页整页渲染走的是 index/_checkin.php 同一份标记，这里只是给 htmx 一个出口。
+     */
+    private function renderCheckinCard(bool $checkedIn, int $credits, int $days): void
+    {
+        $this->render('index/_checkin', [
+            'checkedIn'      => $checkedIn,
+            'checkinCredits' => $credits,
+            'checkinDays'    => $days,
+        ]);
     }
 }

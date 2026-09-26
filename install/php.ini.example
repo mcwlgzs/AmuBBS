@@ -1,0 +1,58 @@
+; AMuBBS — 推荐的 php.ini / php-fpm 配置片段
+;
+; 这些不是「必须」，但直接决定站点能跑多快、Session 会不会被异常回收：
+; 前序性能审计实测（Windows, PHP 8.2, 空库冷渲染）未开 OPcache 时
+; 首页 p50 = 39.1ms、/thread/{id} p50 = 35.2ms，且 131 个 PHP 文件每次请求都要重新编译。
+;
+; 用法：
+;   php -S 开发环境不用管这个文件；
+;   生产环境把相关段落合并进 /etc/php/8.2/fpm/php.ini（或 conf.d/amubbs.ini），
+;   然后 systemctl reload php8.2-fpm。
+
+; ---------------------------------------------------------------------------
+; 1) OPcache —— 单机性能提升最明显的一项
+; ---------------------------------------------------------------------------
+opcache.enable = 1
+opcache.enable_cli = 0
+opcache.memory_consumption = 256
+opcache.interned_strings_buffer = 16
+opcache.max_accelerated_files = 20000
+; 预加载脚本已随仓库提供（preload.php），开启后启动时把核心类常驻内存
+opcache.preload = /var/www/amubbs/preload.php
+opcache.preload_user = www-data
+; 用 deploy.sh 部署（会 reload php-fpm）时关掉时间戳校验最省事；
+; 如果你改代码后不 reload，就必须保持为 1，否则新代码不生效！
+opcache.validate_timestamps = 0
+opcache.revalidate_freq = 0
+opcache.save_comments = 1
+
+; ---------------------------------------------------------------------------
+; 2) Session —— 让 php.ini 与 config/app.php 的 SESSION_LIFETIME 对齐
+;    （应用已会在运行时 ini_set，但 php-fpm 全局值仍需合理）
+; ---------------------------------------------------------------------------
+session.gc_maxlifetime = 7200
+session.gc_probability = 1
+session.gc_divisor = 100
+session.use_strict_mode = 1
+session.cookie_httponly = 1
+session.cookie_samesite = "Lax"
+; HTTPS 站点打开；反代终止 TLS 时也建议打开（应用会自行判断是否加 Secure）
+; session.cookie_secure = 1
+
+; ---------------------------------------------------------------------------
+; 3) 上传与超时
+; ---------------------------------------------------------------------------
+upload_max_filesize = 20M
+post_max_size = 25M
+max_execution_time = 60
+max_input_time = 60
+memory_limit = 256M
+
+; ---------------------------------------------------------------------------
+; 4) 生产环境一定不要开的项
+; ---------------------------------------------------------------------------
+display_errors = Off
+display_startup_errors = Off
+log_errors = On
+error_log = /var/log/php/amubbs-error.log
+expose_php = Off

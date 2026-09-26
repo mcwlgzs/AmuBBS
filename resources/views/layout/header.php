@@ -37,6 +37,35 @@ if (isset($_SESSION['user_id'])) {
 
 $_pageTitle = ($pageTitle ?? '') ? htmlspecialchars($pageTitle) . ' - ' . htmlspecialchars($_siteName) : htmlspecialchars($_siteName);
 $_pageCss = $pageCss ?? [];
+
+// 未登录时页面里有登录/注册弹窗，弹窗里 htmx 取回的表单用的是 auth.css 的表单样式；
+// 已登录用户看不到弹窗，就不加载这份 CSS（省掉每个已登录页面的 17KB）。
+if (!isset($_SESSION['user_id']) && !in_array('auth', $_pageCss, true)) {
+    $_pageCss[] = 'auth';
+}
+
+// 验证码资源（captcha.css 3KB + captcha.js 9KB，且 captcha.js 是 <head> 里的同步脚本，
+// 会阻塞渲染）只在站点确实启用了验证码时加载。
+// 关掉验证码的站（共享主机上常见）每个页面因此少 12KB 与一次阻塞请求；
+// 一旦启用就照旧全站加载 —— 登录/注册弹窗可能在任意页面被 htmx 取回，不能按页面猜。
+$_captchaAssets = false;
+try {
+    $_captchaAssets = \App\Services\CaptchaSvc::isEnabled();
+} catch (\Throwable $e) {
+    // 设置读不到（例如未安装完）时按「需要」处理，宁可多加载也不要让验证码失效
+    $_captchaAssets = true;
+}
+
+// 静态资源版本串：取关键资源 mtime 的最大值，避免发版/改样式后浏览器继续用旧缓存
+// （本项目的 CSS/JS 没有构建步骤，也没有内容哈希，只能靠 mtime 做 cache busting）
+$_assetVer = '';
+foreach (['assets/css/main.css', 'assets/js/app.js'] as $_af) {
+    $_m = @filemtime(APP_PATH . 'public/' . $_af);
+    if ($_m && $_m > (int)$_assetVer) {
+        $_assetVer = (string)$_m;
+    }
+}
+$_assetSuffix = $_assetVer !== '' ? '?v=' . $_assetVer : '';
 ?>
 <!DOCTYPE html>
 <html lang="zh-CN">
@@ -49,21 +78,21 @@ $_pageCss = $pageCss ?? [];
     <title><?= $_pageTitle ?></title>
     <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>💬</text></svg>">
     <?= \App\Middlewares\Csrf::tokenMeta() ?>
-    <link rel="stylesheet" href="<?= htmlspecialchars($_cdnUrl) ?>/assets/css/main.css">
-    <link rel="stylesheet" href="<?= htmlspecialchars($_cdnUrl) ?>/assets/css/highlight.min.css">
-    <link rel="stylesheet" href="<?= htmlspecialchars($_cdnUrl) ?>/assets/css/toastify.min.css">
+    <link rel="stylesheet" href="<?= htmlspecialchars($_cdnUrl) ?>/assets/css/main.css<?= $_assetSuffix ?>">
+    <link rel="stylesheet" href="<?= htmlspecialchars($_cdnUrl) ?>/assets/css/highlight.min.css<?= $_assetSuffix ?>">
+    <link rel="stylesheet" href="<?= htmlspecialchars($_cdnUrl) ?>/assets/css/toastify.min.css<?= $_assetSuffix ?>">
     <?php foreach ($_pageCss as $_css): ?>
-    <link rel="stylesheet" href="<?= htmlspecialchars($_cdnUrl) ?>/assets/css/<?= htmlspecialchars($_css) ?>.css">
+    <link rel="stylesheet" href="<?= htmlspecialchars($_cdnUrl) ?>/assets/css/<?= htmlspecialchars($_css) ?>.css<?= $_assetSuffix ?>">
     <?php endforeach; ?>
-    <link rel="stylesheet" href="<?= htmlspecialchars($_cdnUrl) ?>/assets/css/captcha.css">
-    <style>[x-cloak]{display:none!important}</style>
-    <script src="<?= htmlspecialchars($_cdnUrl) ?>/assets/js/captcha.js"></script>
-    <script defer src="<?= htmlspecialchars($_cdnUrl) ?>/assets/js/app.js"></script>
-    <script defer src="<?= htmlspecialchars($_cdnUrl) ?>/assets/js/utils.js"></script>
-    <script defer src="<?= htmlspecialchars($_cdnUrl) ?>/assets/js/alpine-collapse.min.js"></script>
-    <script defer src="<?= htmlspecialchars($_cdnUrl) ?>/assets/js/alpine.min.js"></script>
+    <?php if ($_captchaAssets): ?>
+    <link rel="stylesheet" href="<?= htmlspecialchars($_cdnUrl) ?>/assets/css/captcha.css<?= $_assetSuffix ?>">
+    <script src="<?= htmlspecialchars($_cdnUrl) ?>/assets/js/captcha.js<?= $_assetSuffix ?>"></script>
+    <?php endif; ?>
+    <script defer src="<?= htmlspecialchars($_cdnUrl) ?>/assets/vendor/htmx/htmx.min.js<?= $_assetSuffix ?>"></script>
+    <script defer src="<?= htmlspecialchars($_cdnUrl) ?>/assets/js/app.js<?= $_assetSuffix ?>"></script>
+    <script defer src="<?= htmlspecialchars($_cdnUrl) ?>/assets/js/utils.js<?= $_assetSuffix ?>"></script>
 </head>
-<body>
+<body hx-headers='{"X-CSRF-TOKEN":"<?= htmlspecialchars(\App\Middlewares\Csrf::generateToken(), ENT_QUOTES, 'UTF-8') ?>"}'>
     <?php include __DIR__ . '/navbar.php'; ?>
 
     <?php if (isset($_SESSION['user_id'])): ?>

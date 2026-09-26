@@ -3,11 +3,8 @@
  * 友情链接组件（页脚显示）
  */
 try {
-    $_friendLinks = \Core\Cache::get('friend_links:active', function () {
-        return \Core\Database::fetchAll(
-            "SELECT name, url, logo FROM friend_links WHERE status = 1 ORDER BY sort_order ASC, id ASC LIMIT 30"
-        );
-    }, 600);
+    // 取数与缓存都在模型里（以前是视图里写 SQL + Cache::get）
+    $_friendLinks = \App\Models\FriendLink::active();
 } catch (\Throwable $e) { $_friendLinks = []; }
 if (!empty($_friendLinks)):
 ?>

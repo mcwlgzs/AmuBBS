@@ -14,11 +14,23 @@ class CaptchaSvc
     private const SLIDER_TOLERANCE = 5;
 
     /**
+     * 站点是否启用了验证码（不管具体哪些场景）
+     *
+     * 布局用它决定要不要加载 captcha.css / captcha.js：
+     * 关掉验证码的站点每页少 3KB CSS + 9KB 阻塞脚本；启用时照旧全站加载
+     * （登录/注册弹窗可能在任何页面被 htmx 取回，不能按页面猜）。
+     */
+    public static function isEnabled(): bool
+    {
+        return SettingSvc::getBool('captcha_enabled', false);
+    }
+
+    /**
      * 检查指定场景是否需要验证码
      */
     public static function isRequired(string $scene): bool
     {
-        if (!SettingSvc::getBool('captcha_enabled', false)) {
+        if (!self::isEnabled()) {
             return false;
         }
         $scenes = array_map('trim', explode(',', SettingSvc::get('captcha_scenes', '')));

@@ -1,0 +1,37 @@
+AMuBBS 前端依赖（本地 vendored，不依赖 CDN、不需要构建步骤）
+
+== 后台外壳（layuimini v2，iframe 多 tab）==
+layui/layui.js                                   Layui 2.6.3      (MIT)  https://github.com/layui/layui
+layui/css/layui.css                              Layui 2.6.3      (MIT)
+layui/css/modules/**                             Layui 2.6.3      (MIT)  layer / laydate 等组件样式与图标
+layui/font/iconfont.woff2, .woff                 Layui 2.6.3      (MIT)  只留两种字体格式，去掉 eot/ttf/svg
+layuimini/css/layuimini.css                      layuimini 2.0.4  (MIT)  https://github.com/zhongshaofa/layuimini
+layuimini/css/themes/default.css                 layuimini 2.0.4  (MIT)  五种配色方案之一
+layuimini/css/public.css                         layuimini 2.0.4  (MIT)  iframe 子页面的页面级样式
+layuimini/js/lay-config.js                       layuimini 2.0.4  (MIT)  把 lay-module/ 注册给 layui.extend
+layuimini/js/lay-module/layuimini/miniAdmin.js   layuimini 2.0.4  (MIT)  外壳初始化（读 /admin/menu.json）
+layuimini/js/lay-module/layuimini/miniMenu.js    layuimini 2.0.4  (MIT)  左侧无限级菜单
+layuimini/js/lay-module/layuimini/miniTab.js     layuimini 2.0.4  (MIT)  多 tab / iframe 管理
+layuimini/js/lay-module/layuimini/miniTheme.js   layuimini 2.0.4  (MIT)  配色方案切换
+font-awesome/css/font-awesome.min.css            Font Awesome 4.7 (MIT)  https://fontawesome.com/v4/
+font-awesome/fonts/fontawesome-webfont.woff2     Font Awesome 4.7 (MIT)  菜单/按钮图标（layuimini 用 fa-*）
+font-awesome/fonts/fontawesome-webfont.woff      Font Awesome 4.7 (MIT)  旧浏览器回退
+
+== 前台 ==
+htmx/htmx.min.js                                 htmx 2.0.11      (0BSD)  https://htmx.org
+
+说明：
+- 只保留压缩版（min）与用得到的字体格式，不含 source map / RTL / 非压缩版，避免仓库膨胀。
+- 选择本地 vendored 而非 CDN：共享虚拟主机上不依赖外部网络，也不受 CDN 可用性影响。
+- **技术栈边界**：layui / layuimini / font-awesome 只在**后台**加载；
+  前台（普通访客）一个字节都不加载，scripts/smoke.php 有断言守着这条线。
+  htmx 反过来只在前台用（后台改成 iframe 多 tab 后不再使用 htmx）。
+- layuimini 的 CSS/JS 是纯静态资源，直接 <link> / <script src> 引入即可，无需打包器。
+- 后台脚本加载顺序（外壳）：
+    layui.js → lay-config.js → 内联 layui.use(['jquery','layer','miniAdmin'])
+  lay-config.js 用 document.scripts 的最后一项推算 rootPath 并 layui.config({base})，
+  所以它必须紧跟在 layui.js 之后、且当时是页面上的最后一个 script。
+- 已下线的依赖：AdminLTE 4.9.1、Bootstrap 5.3.8、OverlayScrollbars 2.16.0、Tabler 1.5.1、
+  Bootstrap Icons 1.13.1
+  （前四个都是被 layuimini/layui 取代的中间态；Bootstrap Icons 1.13.1 是跟 Tabler 1.5.1 同一批
+  评估的图标字体——`bootstrap-icons/` 目录从未进仓库、也没有任何视图引用，不要按「在用依赖」看待）。

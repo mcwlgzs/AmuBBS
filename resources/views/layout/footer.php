@@ -36,28 +36,27 @@
         <?php endif; ?>
     </nav>
 
-    <?php include APP_PATH . 'resources/views/components/confirm-modal.php'; ?>
     <?php include APP_PATH . 'resources/views/components/auth-modal.php'; ?>
 
     <!-- 阅读进度条 -->
     <div class="reading-progress" id="readingProgress"></div>
 
-    <!-- 返回顶部 -->
-    <div x-data="backToTop()" class="back-to-top" :class="{ visible: visible }" @click="scrollTop()">
+    <!-- 返回顶部（可见性 / 点击行为由 app.js 的 [data-back-to-top] 负责） -->
+    <div class="back-to-top" data-back-to-top title="返回顶部" role="button" tabindex="0">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="18 15 12 9 6 15"/></svg>
     </div>
 
-    <!-- 暗色模式切换 -->
-    <div x-data="darkMode()" class="theme-toggle" @click="toggle()" :title="dark ? '切换亮色' : '切换暗色'">
-        <svg x-show="!dark" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
-        <svg x-show="dark" x-cloak viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg>
+    <!-- 暗色模式切换（亮/暗图标由 CSS 依据 html.dark 切换） -->
+    <div class="theme-toggle" data-theme-toggle title="切换暗色" role="button" tabindex="0">
+        <svg class="icon-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+        <svg class="icon-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg>
     </div>
 
-    <script src="<?= htmlspecialchars($_cdnUrl) ?>/assets/js/toastify.min.js"></script>
-    <script src="<?= htmlspecialchars($_cdnUrl) ?>/assets/js/lazyload.min.js"></script>
-    <script src="<?= htmlspecialchars($_cdnUrl) ?>/assets/js/autosize.min.js"></script>
-    <script src="<?= htmlspecialchars($_cdnUrl) ?>/assets/js/timeago.min.js"></script>
-    <!-- app.js 已移至 head 用 defer 加载，确保在 Alpine 之前执行 -->
+    <script src="<?= htmlspecialchars($_cdnUrl) ?>/assets/js/toastify.min.js<?= $_assetSuffix ?? '' ?>"></script>
+    <script src="<?= htmlspecialchars($_cdnUrl) ?>/assets/js/lazyload.min.js<?= $_assetSuffix ?? '' ?>"></script>
+    <script src="<?= htmlspecialchars($_cdnUrl) ?>/assets/js/autosize.min.js<?= $_assetSuffix ?? '' ?>"></script>
+    <script src="<?= htmlspecialchars($_cdnUrl) ?>/assets/js/timeago.min.js<?= $_assetSuffix ?? '' ?>"></script>
+    <!-- app.js 已在 head 里 defer 加载：不阻塞解析，又在 htmx 处理完 DOM 之前就位 -->
 
     <footer class="site-footer">
         <div class="container">

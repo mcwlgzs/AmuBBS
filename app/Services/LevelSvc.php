@@ -5,7 +5,9 @@
 
 namespace App\Services;
 
-use Core\Database;
+use App\Models\User;
+use App\Models\UserGroup;
+use App\Models\UserLevel;
 use Core\Cache;
 
 class LevelSvc
@@ -32,12 +34,7 @@ class LevelSvc
      */
     public static function getAllLevels(): array
     {
-        return Cache::getStale('levels:all', function () {
-            return Database::fetchAll("
-                SELECT * FROM user_levels
-                ORDER BY min_credits ASC
-            ");
-        }, 3600) ?? [];
+        return UserLevel::allCached();
     }
 
     /**
@@ -130,7 +127,7 @@ class LevelSvc
     public static function autoUpgradeGroup(int $userId): void
     {
         try {
-            $user = Database::fetchOne("SELECT id, credits, group_id FROM users WHERE id = ? AND deleted_at IS NULL", [$userId]);
+            $user = User::getCreditsAndGroup($userId);
             if (!$user) return;
 
             $credits = (int)$user['credits'];
@@ -142,21 +139,11 @@ class LevelSvc
             }
 
             // 查找匹配积分区间的用户组（credits_from <= credits < credits_to）
-            $newGroup = Database::fetchOneCached("
-                SELECT id FROM user_groups
-                WHERE credits_from IS NOT NULL AND credits_to IS NOT NULL
-                  AND credits_from <= ? AND credits_to > ?
-                  AND is_admin = 0
-                ORDER BY credits_from DESC
-                LIMIT 1
-            ", [$credits, $credits], 600);
+            $newGroup = UserGroup::matchByCredits($credits);
 
             if ($newGroup && (int)$newGroup['id'] !== $currentGroupId) {
-                Database::execute("UPDATE users SET group_id = ? WHERE id = ?", [(int)$newGroup['id'], $userId]);
-                Cache::delete("user:profile:{$userId}");
-                Cache::delete("user:group:{$userId}");
-                // 清除权限缓存中的 group_id
-                Cache::delete("dbq1:" . md5("SELECT group_id FROM users WHERE id = ? AND deleted_at IS NULL" . serialize([$userId])));
+                // setGroup 内部会清 profile / group / group_id 三处缓存，不用再手拼 dbq 键
+                User::setGroup($userId, (int)$newGroup['id']);
             }
         } catch (\Throwable $e) {
             // credits_from/credits_to 字段不存在时静默忽略，但记录其他异常

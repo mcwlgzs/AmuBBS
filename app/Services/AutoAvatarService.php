@@ -5,8 +5,9 @@
 
 namespace App\Services;
 
-use Core\Database;
 use Core\Cache;
+
+use App\Models\User;
 
 class AutoAvatarService
 {
@@ -23,17 +24,14 @@ class AutoAvatarService
         }
 
         // 获取用户信息
-        $user = Database::fetchOne("SELECT id, avatar FROM users WHERE id = ?", [$userId]);
-        if (!$user) {
-            return;
-        }
+        $avatar = User::getAvatar($userId);
 
         // 检查是否需要覆盖已有头像
         $overwrite = self::shouldOverwriteExisting();
-        if (!$overwrite && !empty($user['avatar']) && $user['avatar'] !== '') {
+        if (!$overwrite && $avatar !== '') {
             // 检查是否为默认头像
             $defaultAvatar = SettingSvc::get('user_default_avatar', '') ?: '/assets/images/default-avatar.png';
-            $isDefault = ($user['avatar'] === '/assets/images/default-avatar.png' || $user['avatar'] === $defaultAvatar);
+            $isDefault = ($avatar === '/assets/images/default-avatar.png' || $avatar === $defaultAvatar);
             if (!$isDefault) {
                 return; // 已有自定义头像，不覆盖
             }
@@ -50,7 +48,7 @@ class AutoAvatarService
         $avatarUrl = '/assets/avatars/' . $chosen;
 
         // 更新用户头像
-        Database::execute("UPDATE users SET avatar = ? WHERE id = ?", [$avatarUrl, $userId]);
+        User::setAvatar($userId, $avatarUrl);
         
         // 清除缓存
         Cache::delete("user:profile:{$userId}");

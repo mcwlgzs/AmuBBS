@@ -10,6 +10,12 @@ use Core\Event;
 
 class LogListener
 {
+    /** 单个日志文件的滚动阈值：10MB */
+    private const MAX_LOG_BYTES = 10485760;
+
+    /** 本请求内是否已检查过滚动（避免每次写日志都 stat） */
+    private static bool $rotated = false;
+
     /**
      * 注册所有日志监听器
      */
@@ -103,7 +109,15 @@ class LogListener
     private static function log(string $type, string $message): void
     {
         $logFile = APP_PATH . 'storage/logs/' . date('Y-m-d') . '.log';
+
+        // 单个日志文件超过 10MB 时滚动一代（.log.1），避免被刷爆磁盘/耗尽 inode。
+        // 静态标记保证每个请求只 stat 一次；跨天/跨请求时由 CronSvc::rotateLogs() 兜底。
+        if (!self::$rotated && is_file($logFile) && (int)filesize($logFile) > self::MAX_LOG_BYTES) {
+            self::$rotated = true;
+            @rename($logFile, $logFile . '.1');
+        }
+
         $line = sprintf("[%s] [%s] %s\n", date('Y-m-d H:i:s'), $type, $message);
-        file_put_contents($logFile, $line, FILE_APPEND | LOCK_EX);
+        @file_put_contents($logFile, $line, FILE_APPEND | LOCK_EX);
     }
 }

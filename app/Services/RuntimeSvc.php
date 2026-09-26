@@ -9,7 +9,7 @@
 
 namespace App\Services;
 
-use Core\Database;
+use App\Models\SiteStat;
 use Core\Cache;
 
 class RuntimeSvc
@@ -55,27 +55,8 @@ class RuntimeSvc
     public static function getTodayStats(): array
     {
         return Cache::getStale('runtime:today', function () {
-            $todayStart = strtotime('today');
-            $row = Database::fetchOne("
-                SELECT
-                    (SELECT COUNT(*) FROM threads WHERE created_at >= ? AND deleted_at IS NULL) as threads,
-                    (SELECT COUNT(*) FROM posts WHERE created_at >= ? AND deleted_at IS NULL) as posts,
-                    (SELECT COUNT(*) FROM users WHERE created_at >= ? AND deleted_at IS NULL) as users
-            ", [$todayStart, $todayStart, $todayStart]);
-            return [
-                'threads' => (int)($row['threads'] ?? 0),
-                'posts' => (int)($row['posts'] ?? 0),
-                'users' => (int)($row['users'] ?? 0),
-            ];
+            return SiteStat::today(strtotime('today'));
         }, 60);
-    }
-
-    /**
-     * 获取在线人数（委托给 OnlineSvc，避免重复查询 sessions 表）
-     */
-    public static function getOnlineCount(): int
-    {
-        return \App\Services\OnlineSvc::getOnlineCount();
     }
 
     /**
@@ -83,19 +64,7 @@ class RuntimeSvc
      */
     private static function buildStats(): array
     {
-        $row = Database::fetchOne("
-            SELECT
-                (SELECT COUNT(*) FROM users WHERE deleted_at IS NULL) as users,
-                (SELECT COUNT(*) FROM threads WHERE deleted_at IS NULL) as threads,
-                (SELECT COUNT(*) FROM posts WHERE deleted_at IS NULL) as posts,
-                (SELECT COUNT(*) FROM forums WHERE deleted_at IS NULL) as forums
-        ");
-        return [
-            'users' => (int)($row['users'] ?? 0),
-            'threads' => (int)($row['threads'] ?? 0),
-            'posts' => (int)($row['posts'] ?? 0),
-            'forums' => (int)($row['forums'] ?? 0),
-        ];
+        return SiteStat::totals();
     }
 
     /**

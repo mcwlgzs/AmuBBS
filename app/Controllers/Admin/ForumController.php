@@ -5,8 +5,11 @@
 
 namespace App\Controllers\Admin;
 
-use Core\Database;
-use Core\Cache;
+use App\Models\Forum;
+use App\Models\ForumAccess;
+use App\Models\User;
+use App\Models\UserGroup;
+use App\Services\ForumSvc;
 use Core\Event;
 use App\Events\Events;
 
@@ -15,21 +18,15 @@ class ForumController extends AdminBase
     public function forums(): void
     {
         $this->requireAdmin();
-        $this->render('admin/forums', [
-            'pageTitle' => '板块管理',
-        ]);
+        $this->renderForumsPage();
     }
 
     /**
-     * 板块列表 API（layui table 数据源）
+     * 板块列表数据（页面与 JSON API 共用同一份查询逻辑）
      */
-    public function forumsApi(): void
+    private function fetchForums(): array
     {
-        $this->requireAdmin();
-
-        $forums = Database::fetchAll(
-            "SELECT id, parent_id, name, description, `rank`, moderators, announcement, seo_title, seo_keywords, thread_count, post_count, created_at FROM forums WHERE deleted_at IS NULL ORDER BY parent_id ASC, `rank` DESC, id ASC"
-        );
+        $forums = Forum::adminList();
 
         // 将版主 ID 转为用户名
         $allModIds = [];
@@ -41,15 +38,8 @@ class ForumController extends AdminBase
                 }
             }
         }
-        $modNameMap = [];
-        if (!empty($allModIds)) {
-            $ids = array_keys($allModIds);
-            $placeholders = implode(',', array_fill(0, count($ids), '?'));
-            $rows = Database::fetchAll("SELECT id, username FROM users WHERE id IN ({$placeholders})", $ids);
-            foreach ($rows as $r) {
-                $modNameMap[(int)$r['id']] = $r['username'];
-            }
-        }
+        $modNameMap = User::getUsernameMap(array_keys($allModIds));
+
         foreach ($forums as &$f) {
             if (!empty($f['moderators'])) {
                 $ids = array_filter(array_map('intval', explode(',', $f['moderators'])));
@@ -61,14 +51,77 @@ class ForumController extends AdminBase
         }
         unset($f);
 
-        $this->layuiJson($forums, count($forums));
+        return $forums;
+    }
+
+    /**
+     * 渲染板块管理页面片段（GET 与增删改后的刷新共用同一个渲染路径）
+     */
+    private function renderForumsPage(): void
+    {
+        $this->renderAdmin('admin/forums', [
+            'pageTitle' => '板块管理',
+            'rows'      => $this->fetchForums(),
+        ], 'forums');
+    }
+
+    /**
+     * 板块列表 API（保留，供外部 AJAX 调用）
+     */
+    public function forumsApi(): void
+    {
+        $this->requireAdmin();
+
+        $forums = $this->fetchForums();
+        $this->jsonTable($forums, count($forums));
+    }
+
+    /**
+     * 板块表单片段（layer iframe 弹层用）
+     *
+     * ?id=0 或省略 → 新增；?id=N → 编辑
+     */
+    public function forumForm(): void
+    {
+        $this->requireAdmin();
+
+        $id = max(0, (int)($_GET['id'] ?? 0));
+        $forum = null;
+
+        if ($id > 0) {
+            $forum = Forum::findById($id);
+            if (!$forum) {
+                http_response_code(404);
+                $this->renderAdmin('admin/partials/error', ['pageTitle' => '板块不存在', 'message' => '板块不存在']);
+                return;
+            }
+
+            // 版主 ID → 用户名，供输入框回显
+            $modIds = array_filter(array_map('intval', explode(',', (string)($forum['moderators'] ?? ''))));
+            $forum['moderators_display'] = '';
+            if (!empty($modIds)) {
+                $nameMap = User::getUsernameMap($modIds);
+                $forum['moderators_display'] = implode(',', array_map(
+                    static fn(int $mid): string => $nameMap[$mid] ?? (string)$mid,
+                    $modIds
+                ));
+            }
+        }
+
+        $this->renderAdmin('admin/partials/forum_form', [
+            'pageTitle' => $forum !== null ? '编辑板块' : '新增板块',
+            'forum'     => $forum,
+            'isEdit'    => $forum !== null,
+            // 上级板块下拉：不能把自己设成自己的上级，视图里按 id 过滤
+            'parents'   => Forum::getOptions(),
+        ], 'forums');
     }
 
     public function forumCreate(): void
     {
         $this->requireAdmin();
 
-        $input = json_decode(file_get_contents('php://input'), true);
+        $input = $this->input();
         $name = trim($input['name'] ?? '');
         $description = trim($input['description'] ?? '');
         $parentId = (int) ($input['parent_id'] ?? 0);
@@ -79,20 +132,14 @@ class ForumController extends AdminBase
         $seoKeywords = trim($input['seo_keywords'] ?? '');
 
         if ($name === '') {
-            $this->error('板块名称不能为空');
+            $this->respondMutation(false, '板块名称不能为空', fn() => $this->renderForumsPage());
             return;
         }
 
         $moderators = $this->resolveModeratorIds($moderatorsInput);
 
-        Database::execute(
-            "INSERT INTO forums (parent_id, name, description, `rank`, moderators, announcement, seo_title, seo_keywords, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            [$parentId, $name, $description, $rank, $moderators, $announcement, $seoTitle, $seoKeywords, time()]
-        );
+        $forumId = Forum::adminCreate($parentId, $name, $description, $rank, $moderators, $announcement, $seoTitle, $seoKeywords);
 
-        $forumId = Database::lastInsertId();
-        Cache::delete('forums:list');
-        Cache::delete('forums:children:all');
         Event::dispatch(Events::ADMIN_FORUM_CREATED, [
             'action' => '创建板块',
             'admin_id' => $_SESSION['user_id'],
@@ -100,14 +147,15 @@ class ForumController extends AdminBase
             'target_type' => 'forum',
             'target_id' => $forumId,
         ]);
-        $this->success('板块已创建', ['id' => $forumId]);
+
+        $this->respondMutation(true, "已创建板块「{$name}」", fn() => $this->renderForumsPage());
     }
 
     public function forumUpdate(): void
     {
         $this->requireAdmin();
 
-        $input = json_decode(file_get_contents('php://input'), true);
+        $input = $this->input();
         $id = (int) ($input['id'] ?? 0);
         $name = trim($input['name'] ?? '');
         $description = trim($input['description'] ?? '');
@@ -119,20 +167,14 @@ class ForumController extends AdminBase
         $seoKeywords = trim($input['seo_keywords'] ?? '');
 
         if ($id <= 0 || $name === '') {
-            $this->error('参数错误');
+            $this->respondMutation(false, '参数错误', fn() => $this->renderForumsPage());
             return;
         }
 
         $moderators = $this->resolveModeratorIds($moderatorsInput);
 
-        Database::execute(
-            "UPDATE forums SET parent_id = ?, name = ?, description = ?, `rank` = ?, moderators = ?, announcement = ?, seo_title = ?, seo_keywords = ?, updated_at = ? WHERE id = ?",
-            [$parentId, $name, $description, $rank, $moderators, $announcement, $seoTitle, $seoKeywords, time(), $id]
-        );
+        Forum::adminUpdate($id, $parentId, $name, $description, $rank, $moderators, $announcement, $seoTitle, $seoKeywords);
 
-        Cache::delete('forums:list');
-        Cache::delete('forums:children:all');
-        Cache::delete("forum:{$id}");
         Event::dispatch(Events::ADMIN_FORUM_UPDATED, [
             'action' => '编辑板块',
             'admin_id' => $_SESSION['user_id'],
@@ -140,22 +182,23 @@ class ForumController extends AdminBase
             'target_type' => 'forum',
             'target_id' => $id,
         ]);
-        $this->success('板块已更新');
+
+        $this->respondMutation(true, "已更新板块「{$name}」", fn() => $this->renderForumsPage());
     }
 
     public function forumDelete(): void
     {
         $this->requireAdmin();
 
-        $input = json_decode(file_get_contents('php://input'), true);
+        $input = $this->input();
         $id = (int) ($input['id'] ?? 0);
 
         if ($id <= 0) {
-            $this->error('参数错误');
+            $this->respondMutation(false, '参数错误', fn() => $this->renderForumsPage());
             return;
         }
 
-        $forumSvc = new \App\Services\ForumSvc();
+        $forumSvc = new ForumSvc();
         $forumSvc->deleteForum($id);
 
         Event::dispatch(Events::ADMIN_FORUM_DELETED, [
@@ -165,78 +208,67 @@ class ForumController extends AdminBase
             'target_type' => 'forum',
             'target_id' => $id,
         ]);
-        $this->success('板块已删除');
+
+        $this->respondMutation(true, '板块已删除', fn() => $this->renderForumsPage());
     }
 
+    /**
+     * 板块权限片段（layer iframe 弹层用）
+     *
+     * 原来是一个返回 JSON 的接口，由前端 JS 拼表格；
+     * 现在直接返回服务端渲染好的表格片段。
+     */
     public function forumAccess(): void
     {
         $this->requireAdmin();
 
-        $input = json_decode(file_get_contents('php://input'), true);
-        $forumId = (int)($input['forum_id'] ?? 0);
-
+        $forumId = (int)($_GET['forum_id'] ?? 0);
         if ($forumId <= 0) {
-            $this->error('参数错误');
+            http_response_code(400);
+            $this->renderAdmin('admin/partials/error', ['pageTitle' => '参数错误', 'message' => '参数错误']);
             return;
         }
 
-        $groups = Database::fetchAll("SELECT * FROM user_groups ORDER BY id");
-        $accessRows = Database::fetchAll("SELECT * FROM forum_access WHERE forum_id = ?", [$forumId]);
+        $forum = Forum::findById($forumId);
+        if (!$forum) {
+            http_response_code(404);
+            $this->renderAdmin('admin/partials/error', ['pageTitle' => '板块不存在', 'message' => '板块不存在']);
+            return;
+        }
+
+        $groups = UserGroup::all();
+        $accessRows = ForumAccess::rowsForForum($forumId);
 
         $accessMap = [];
         foreach ($accessRows as $row) {
-            $accessMap[$row['group_id']] = $row;
+            $accessMap[(int)$row['group_id']] = $row;
         }
 
-        $this->success('ok', ['groups' => $groups, 'access' => $accessMap]);
+        $this->renderAdmin('admin/partials/forum_access', [
+            'pageTitle' => '板块权限',
+            'forum'     => $forum,
+            'groups'    => $groups,
+            'accessMap' => $accessMap,
+        ], 'forums');
     }
 
     public function forumAccessSave(): void
     {
         $this->requireAdmin();
 
-        $input = json_decode(file_get_contents('php://input'), true);
+        $input = $this->input();
         $forumId = (int)($input['forum_id'] ?? 0);
         $permissions = $input['permissions'] ?? [];
 
         if ($forumId <= 0) {
-            $this->error('参数错误');
+            $this->respondMutation(false, '参数错误', fn() => $this->renderForumsPage());
             return;
         }
 
-        Database::beginTransaction();
-        try {
-            Database::execute("DELETE FROM forum_access WHERE forum_id = ?", [$forumId]);
+        // 整批替换（先清空再按需插入）与缓存失效都在模型里，一个事务
+        ForumAccess::replaceForForum($forumId, $permissions);
 
-            foreach ($permissions as $groupId => $perms) {
-                $gid = (int)$groupId;
-                $allowRead = (int)($perms['allow_read'] ?? 1);
-                $allowThread = (int)($perms['allow_thread'] ?? 1);
-                $allowPost = (int)($perms['allow_post'] ?? 1);
-                $allowAttach = (int)($perms['allow_attach'] ?? 1);
-                $allowDown = (int)($perms['allow_down'] ?? 1);
-
-                if ($allowRead && $allowThread && $allowPost && $allowAttach && $allowDown) {
-                    continue;
-                }
-
-                Database::execute(
-                    "INSERT INTO forum_access (forum_id, group_id, allow_read, allow_thread, allow_post, allow_attach, allow_down) VALUES (?, ?, ?, ?, ?, ?, ?)",
-                    [$forumId, $gid, $allowRead, $allowThread, $allowPost, $allowAttach, $allowDown]
-                );
-            }
-            Database::commit();
-        } catch (\Throwable $e) {
-            Database::rollBack();
-            throw $e;
-        }
-
-        $groups = Database::fetchAll("SELECT id FROM user_groups");
-        foreach ($groups as $g) {
-            Cache::delete("forum_access:{$forumId}:{$g['id']}");
-        }
-
-        $this->success('权限已保存');
+        $this->respondMutation(true, '权限已保存', fn() => $this->renderForumsPage());
     }
 
     private function resolveModeratorIds(string $input): string
@@ -253,7 +285,7 @@ class ForumController extends AdminBase
                 $ids[] = (int)$name;
                 continue;
             }
-            $user = Database::fetchOne("SELECT id FROM users WHERE username = ? AND deleted_at IS NULL", [$name]);
+            $user = User::findByUsername($name);
             if ($user) {
                 $ids[] = (int)$user['id'];
             }

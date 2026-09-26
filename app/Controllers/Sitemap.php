@@ -6,7 +6,9 @@
 
 namespace App\Controllers;
 
-use Core\Database;
+use App\Models\Forum;
+use App\Models\Thread;
+use App\Services\SettingSvc;
 use Core\Cache;
 
 class Sitemap extends Base
@@ -21,8 +23,12 @@ class Sitemap extends Base
             return;
         }
 
-        $siteUrl = rtrim(\App\Services\SettingSvc::get('site_url', ''), '/');
-        $htmlSuffix = \App\Services\SettingSvc::getBool('url_html_suffix', true) ? '.html' : '';
+        $siteUrl = rtrim(SettingSvc::get('site_url', ''), '/');
+        $htmlSuffix = SettingSvc::getBool('url_html_suffix', true) ? '.html' : '';
+
+        // sitemap 是「给所有人看」的，必须过滤掉当前访客无权浏览的板块 / 帖子，
+        // 否则会把受限板块的链接直接交给搜索引擎
+        $viewerId = isset($_SESSION['user_id']) ? (int)$_SESSION['user_id'] : null;
 
         $xml = '<?xml version="1.0" encoding="UTF-8"?>' . "\n";
         $xml .= '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">' . "\n";
@@ -31,19 +37,19 @@ class Sitemap extends Base
         $xml .= $this->urlEntry($siteUrl . '/', date('c'), 'daily', '1.0');
 
         // 板块页
-        $forums = Database::fetchAll(
-            "SELECT id, updated_at FROM forums WHERE deleted_at IS NULL ORDER BY sort_order ASC LIMIT 200"
-        );
-        foreach ($forums as $f) {
+        foreach (Forum::allForSitemap(200) as $f) {
+            if (!\App\Services\ForumSvc::canRead((int)$f['id'], $viewerId)) {
+                continue;
+            }
             $lastmod = !empty($f['updated_at']) ? date('c', (int)$f['updated_at']) : date('c');
             $xml .= $this->urlEntry($siteUrl . '/forum/' . $f['id'] . $htmlSuffix, $lastmod, 'daily', '0.8');
         }
 
         // 最近更新的帖子（最多 2000 条）
-        $threads = Database::fetchAll(
-            "SELECT id, updated_at, created_at FROM threads WHERE deleted_at IS NULL ORDER BY updated_at DESC LIMIT 2000"
-        );
-        foreach ($threads as $t) {
+        foreach (Thread::allForSitemap(2000) as $t) {
+            if (!\App\Services\ForumSvc::canRead((int)($t['forum_id'] ?? 0), $viewerId)) {
+                continue;
+            }
             $ts = $t['updated_at'] ?: $t['created_at'];
             $lastmod = date('c', (int)$ts);
             $xml .= $this->urlEntry($siteUrl . '/thread/' . $t['id'] . $htmlSuffix, $lastmod, 'weekly', '0.6');

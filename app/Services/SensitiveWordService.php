@@ -5,8 +5,9 @@
 
 namespace App\Services;
 
-use Core\Database;
 use Core\Cache;
+
+use App\Models\SensitiveWord;
 
 class SensitiveWordService
 {
@@ -123,7 +124,7 @@ class SensitiveWordService
     private static function getWords(): array
     {
         return Cache::get('sensitive_words:all', function () {
-            return Database::fetchAll("SELECT word, replacement, level FROM sensitive_words ORDER BY level DESC");
+            return SensitiveWord::allForFilter();
         }, 600);
     }
 

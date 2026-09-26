@@ -23,14 +23,16 @@ class TaskCenter extends Base
     public function claim(): void
     {
         $this->requireLogin();
-        $taskKey = trim($_POST['task_key'] ?? '');
+        $taskKey = trim((string)($this->input()['task_key'] ?? ''));
         try {
             $result = \App\Services\TaskCenterSvc::claim($this->getCurrentUserId(), $taskKey);
-            $this->success('领取成功，获得 ' . $result['credits'] . ' 积分');
         } catch (\RuntimeException $e) {
-            $this->error($e->getMessage());
+            $this->respondRefresh(false, $e->getMessage());
             return;
         }
+
+        // 领取后积分、任务进度、按钮状态全变，让前端整页刷新一次
+        $this->respondRefresh(true, '领取成功，获得 ' . $result['credits'] . ' 积分');
     }
 
     /**
@@ -41,15 +43,16 @@ class TaskCenter extends Base
         $this->requireLogin();
         try {
             $result = \App\Services\TaskCenterSvc::claimAll($this->getCurrentUserId());
-            if ($result['credits'] > 0) {
-                $this->success('领取成功，共获得 ' . $result['credits'] . ' 积分');
-            } else {
-                $this->error('没有可领取的任务奖励');
-                return;
-            }
         } catch (\RuntimeException $e) {
-            $this->error($e->getMessage());
+            $this->respondRefresh(false, $e->getMessage());
             return;
         }
+
+        if ($result['credits'] <= 0) {
+            $this->respondRefresh(false, '没有可领取的任务奖励');
+            return;
+        }
+
+        $this->respondRefresh(true, '领取成功，共获得 ' . $result['credits'] . ' 积分');
     }
 }

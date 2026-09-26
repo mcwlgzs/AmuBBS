@@ -1,215 +1,138 @@
-<?php include __DIR__ . '/layout_child.php'; ?>
+<?php
+/**
+ * 后台 - 用户组管理（layuimini 子页面片段）
+ *
+ * 形状照 resources/views/admin/forums.php：
+ *   toolbar（新增用户组）→ layui table（id = userGroupTable）→ RowBar（编辑 / 删除）
+ *
+ * 数据来自已有的 GET /admin/api/user-groups（一次返回全部用户组，不支持任何筛选参数），
+ * 所以这里和板块管理一样**没有搜索区**；又因为 page:false 时整份数据都在前端，
+ * 列上的 sort:true 是**真的**客户端排序（layui 只重排缓存、不会再发请求），因此保留。
+ *
+ * 增删改走 POST /admin/user-groups/save、POST /admin/user-groups/delete，
+ * 表单由 layer 的 iframe 弹层打开 /admin/user-groups/form（见 partials/group_form.php）。
+ *
+ * 变量：$groups, $permLabels
+ */
 
-<div class="layui-card">
-    <div class="layui-card-header" style="display:flex;justify-content:space-between;align-items:center;">
-        <h3>用户组列表</h3>
-        <button class="layui-btn layui-btn-sm" id="btnAddGroup">新增用户组</button>
-    </div>
-    <div class="layui-card-body">
-        <table id="groupsTable" lay-filter="groupsTable"></table>
-    </div>
-</div>
+$groups     = is_array($groups ?? null) ? $groups : [];
+$permLabels = is_array($permLabels ?? null) ? $permLabels : [];
 
-<!-- 行操作模板 -->
-<script type="text/html" id="groupBar">
-    <button class="layui-btn layui-btn-xs layui-btn-normal" lay-event="edit">编辑</button>
-    {{# if(d.id > 3){ }}
-    <button class="layui-btn layui-btn-xs layui-btn-danger" lay-event="del">删除</button>
-    {{# } }}
+/** 内置用户组（1 普通 / 2 版主 / 3 管理员）不可删除，与控制器 UserGroupController::BUILTIN_MAX_ID 一致 */
+$builtinMax = 3;
+
+/** HTML 转义：templet 里拼的是用户内容，layui 2.6 的 templet 不会自动转义 */
+$e = static fn($v): string => htmlspecialchars((string)$v, ENT_QUOTES, 'UTF-8');
+
+/** 把 PHP 值安全地塞进 <script> 里的 JS 字面量 */
+$js = static fn($v): string => (string)json_encode(
+    $v,
+    JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT
+);
+?>
+
+<!-- 顶部工具栏 -->
+<script type="text/html" id="userGroupToolbar">
+  <div class="layui-btn-container">
+    <button class="layui-btn layui-btn-sm" lay-event="add">
+      <i class="layui-icon layui-icon-add-1"></i> 新增用户组
+    </button>
+  </div>
 </script>
 
-<!-- 弹窗表单模板 -->
-<script type="text/html" id="groupFormTpl">
-<div style="padding:20px;">
-    <form class="layui-form" lay-filter="groupForm">
-        <input type="hidden" name="id" id="gf_id" value="">
-        <div class="layui-form-item">
-            <label class="layui-form-label">组名</label>
-            <div class="layui-input-block">
-                <input type="text" name="name" id="gf_name" class="layui-input" lay-verify="required" placeholder="请输入组名">
-            </div>
-        </div>
-        <div class="layui-form-item">
-            <label class="layui-form-label">管理员权限</label>
-            <div class="layui-input-block" style="padding-top:9px;">
-                <input type="checkbox" name="is_admin" id="gf_is_admin" lay-skin="switch" lay-text="是|否">
-            </div>
-        </div>
-        <div class="layui-form-item">
-            <label class="layui-form-label">权限设置</label>
-            <div class="layui-input-block" style="padding-top:6px;">
-                <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px 0;">
-                    <input type="checkbox" name="allow_read" title="浏览" lay-skin="primary">
-                    <input type="checkbox" name="allow_thread" title="发帖" lay-skin="primary">
-                    <input type="checkbox" name="allow_post" title="回复" lay-skin="primary">
-                    <input type="checkbox" name="allow_attach" title="附件" lay-skin="primary">
-                    <input type="checkbox" name="allow_down" title="下载" lay-skin="primary">
-                    <input type="checkbox" name="allow_top" title="置顶" lay-skin="primary">
-                    <input type="checkbox" name="allow_update" title="编辑" lay-skin="primary">
-                    <input type="checkbox" name="allow_delete" title="删除" lay-skin="primary">
-                    <input type="checkbox" name="allow_move" title="移动" lay-skin="primary">
-                    <input type="checkbox" name="allow_ban_user" title="封禁" lay-skin="primary">
-                    <input type="checkbox" name="allow_delete_user" title="删用户" lay-skin="primary">
-                    <input type="checkbox" name="allow_view_ip" title="查IP" lay-skin="primary">
-                </div>
-            </div>
-        </div>
-        <div class="layui-form-item layui-form-text">
-            <label class="layui-form-label">扩展权限（JSON）</label>
-            <div class="layui-input-block">
-                <textarea name="permStr" id="gf_permStr" class="layui-textarea" rows="3" placeholder='{"thread.create":true}'></textarea>
-            </div>
-        </div>
-    </form>
-</div>
+<!-- 行内操作：内置用户组不给删除按钮 -->
+<script type="text/html" id="userGroupRowBar">
+  <a class="layui-btn layui-btn-xs" lay-event="edit">编辑</a>
+  {{# if (d.id > <?= (int)$builtinMax ?>) { }}
+  <a class="layui-btn layui-btn-xs layui-btn-danger" lay-event="delete">删除</a>
+  {{# } }}
 </script>
+
+<table class="layui-hide" id="userGroupTable" lay-filter="userGroupTable"></table>
 
 <script>
-layui.use(['table', 'form', 'layer'], function(){
-    var $ = layui.$, table = layui.table, form = layui.form, layer = layui.layer;
+var GROUP_PERMS = <?= $js($permLabels) ?>;
 
-    var permFields = ['allow_read','allow_thread','allow_post','allow_attach','allow_down','allow_top',
-                      'allow_update','allow_delete','allow_move','allow_ban_user','allow_delete_user','allow_view_ip'];
-    var permLabels = {
-        'allow_read':'浏览','allow_thread':'发帖','allow_post':'回复',
-        'allow_attach':'附件','allow_down':'下载','allow_top':'置顶',
-        'allow_update':'编辑','allow_delete':'删除','allow_move':'移动',
-        'allow_ban_user':'封禁','allow_delete_user':'删用户','allow_view_ip':'查IP'
-    };
-    var defaultChecked = ['allow_read','allow_thread','allow_post','allow_attach','allow_down'];
+layui.use(['table', 'util'], function () {
+  var table = layui.table;
+  var util  = layui.util;
 
-    table.render({
-        elem: '#groupsTable',
-        id: 'groupsTable',
-        url: '/admin/api/user-groups',
-        page: false,
-        cols: [[
-            {field:'id', title:'ID', width:60, sort:true},
-            {field:'name', title:'组名', width:140},
-            {field:'is_admin', title:'管理员', width:80, templet: function(d){
-                return d.is_admin ? '<span style="color:#009688;">是</span>' : '否';
-            }},
-            {field:'user_count', title:'用户数', width:80, templet: function(d){
-                return Number(d.user_count || 0).toLocaleString();
-            }},
-            {field:'permissions', title:'核心权限', minWidth:250, templet: function(d){
-                var tags = [];
-                for(var i = 0; i < permFields.length; i++){
-                    if(d[permFields[i]]) tags.push('<span class="layui-badge layui-bg-green" style="margin:1px;">'+permLabels[permFields[i]]+'</span>');
-                }
-                return tags.length ? tags.join('') : '<span style="color:#999;">无</span>';
-            }},
-            {title:'操作', width:140, align:'center', toolbar:'#groupBar'}
-        ]],
-        text: {none: '暂无用户组'}
+  var esc = function (v) { return util.escape(v == null ? '' : String(v)); };
+
+  /** 已开启的核心权限 → 一排自己的小标签 */
+  function permBadges(d) {
+    var html = '';
+    layui.each(GROUP_PERMS, function (field, label) {
+      if (Number(d[field]) === 1) {
+        html += '<span class="layui-badge layui-bg-blue">' + esc(label) + '</span> ';
+      }
     });
+    return html || '<span class="admin-muted">无</span>';
+  }
 
-    // 打开弹窗
-    function openModal(title, data){
-        var idx = layer.open({
-            type: 1,
-            title: title,
-            area: ['560px', '480px'],
-            content: $('#groupFormTpl').html(),
-            btn: ['保存', '取消'],
-            yes: function(index){
-                saveGroup(index);
-            },
-            success: function(layero){
-                if(data){
-                    layero.find('#gf_id').val(data.id);
-                    layero.find('#gf_name').val(data.name);
-                    layero.find('#gf_permStr').val(data.permissions || '{}');
-                    if(data.is_admin == 1) layero.find('#gf_is_admin').prop('checked', true);
-                    for(var i = 0; i < permFields.length; i++){
-                        if(data[permFields[i]] == 1) layero.find('input[name="'+permFields[i]+'"]').prop('checked', true);
-                    }
-                } else {
-                    layero.find('#gf_permStr').val('{}');
-                    for(var j = 0; j < defaultChecked.length; j++){
-                        layero.find('input[name="'+defaultChecked[j]+'"]').prop('checked', true);
-                    }
-                }
-                form.render(null, 'groupForm');
-            }
+  table.render({
+    elem: '#userGroupTable',
+    url: '/admin/api/user-groups',
+    toolbar: '#userGroupToolbar',
+    defaultToolbar: ['filter', 'print'],
+    cols: [[
+      { field: 'id', width: 80, title: 'ID', sort: true, templet: function (d) {
+          return '<span class="admin-muted admin-num">' + (parseInt(d.id, 10) || 0) + '</span>';
+        } },
+      { field: 'name', minWidth: 160, title: '组名', templet: function (d) {
+          var html = '<span>' + esc(d.name) + '</span>';
+          if ((parseInt(d.id, 10) || 0) <= <?= (int)$builtinMax ?>) {
+            html += ' <span class="layui-badge layui-bg-gray">内置</span>';
+          }
+          return html;
+        } },
+      { field: 'is_admin', width: 100, title: '管理员', align: 'center', templet: function (d) {
+          return Number(d.is_admin) === 1
+            ? '<span class="layui-badge layui-bg-green">是</span>'
+            : '<span class="admin-muted">否</span>';
+        } },
+      { field: 'user_count', width: 100, title: '用户数', sort: true, align: 'right', templet: function (d) {
+          return '<span class="admin-muted admin-num">' + (parseInt(d.user_count, 10) || 0) + '</span>';
+        } },
+      { field: 'permissions', minWidth: 300, title: '核心权限', templet: permBadges },
+      { title: '操作', width: 130, toolbar: '#userGroupRowBar', align: 'center' }
+    ]],
+    page: false,
+    limit: 200,
+    text: { none: '还没有用户组，点右上角「新增用户组」创建第一个' },
+    skin: 'line'
+  });
+
+  /** 打开新增 / 编辑表单（layer 的 iframe 弹层，内容是 layout_child 渲染的完整页面） */
+  function openForm(id) {
+    layui.layer.open({
+      title: id ? '编辑用户组' : '新增用户组',
+      type: 2,
+      shade: 0.2,
+      shadeClose: false,
+      maxmin: true,
+      area: ['720px', '92%'],
+      content: '/admin/user-groups/form?id=' + (id || 0)
+    });
+  }
+
+  // 工具栏事件
+  table.on('toolbar(userGroupTable)', function (obj) {
+    if (obj.event === 'add') { openForm(0); }
+  });
+
+  // 行操作事件
+  table.on('tool(userGroupTable)', function (obj) {
+    var d = obj.data;
+
+    if (obj.event === 'edit') {
+      openForm(parseInt(d.id, 10) || 0);
+    } else if (obj.event === 'delete') {
+      AdminUi.confirmPost('确定删除用户组「' + esc(d.name) + '」吗？删除后不可恢复。',
+        '/admin/user-groups/delete', { id: d.id }, function () {
+          table.reload('userGroupTable');
         });
     }
-
-    // 保存
-    function saveGroup(layerIndex){
-        var $layer = $('.layui-layer-content:visible');
-        var name = $layer.find('#gf_name').val();
-        if(!name || !name.trim()){
-            layer.msg('请输入组名', {icon:2});
-            return;
-        }
-        var permStr = $layer.find('#gf_permStr').val() || '{}';
-        var perms = {};
-        try { perms = JSON.parse(permStr); } catch(e){
-            layer.msg('扩展权限 JSON 格式错误', {icon:2});
-            return;
-        }
-        var body = {
-            id: parseInt($layer.find('#gf_id').val()) || 0,
-            name: name.trim(),
-            is_admin: $layer.find('#gf_is_admin').is(':checked') ? 1 : 0,
-            permissions: perms
-        };
-        for(var i = 0; i < permFields.length; i++){
-            body[permFields[i]] = $layer.find('input[name="'+permFields[i]+'"]').is(':checked') ? 1 : 0;
-        }
-        $.ajax({
-            url: '/admin/user-groups/save',
-            type: 'POST',
-            contentType: 'application/json',
-            data: JSON.stringify(body),
-            success: function(res){
-                if(res.code===0||res.success){
-                    layer.msg('保存成功', {icon:1});
-                    layer.close(layerIndex);
-                    table.reload('groupsTable');
-                } else {
-                    layer.msg(res.msg||res.message||'保存失败', {icon:2});
-                }
-            },
-            error: function(){ layer.msg('请求失败', {icon:2}); }
-        });
-    }
-
-    // 新增
-    $('#btnAddGroup').on('click', function(){ openModal('新增用户组', null); });
-
-    // 行操作
-    table.on('tool(groupsTable)', function(obj){
-        var d = obj.data;
-        if(obj.event === 'edit'){
-            openModal('编辑用户组', d);
-        } else if(obj.event === 'del'){
-            if(d.id <= 3){
-                layer.msg('系统内置用户组不可删除', {icon:2});
-                return;
-            }
-            layer.confirm('确定删除此用户组？', {icon:3, title:'确认删除'}, function(index){
-                $.ajax({
-                    url: '/admin/user-groups/delete',
-                    type: 'POST',
-                    contentType: 'application/json',
-                    data: JSON.stringify({id: d.id}),
-                    success: function(res){
-                        if(res.code===0||res.success){
-                            layer.msg('删除成功', {icon:1});
-                            table.reload('groupsTable');
-                        } else {
-                            layer.msg(res.msg||res.message||'删除失败', {icon:2});
-                        }
-                    },
-                    error: function(){ layer.msg('请求失败', {icon:2}); }
-                });
-                layer.close(index);
-            });
-        }
-    });
+  });
 });
 </script>
-
-<?php include __DIR__ . '/layout_child_footer.php'; ?>

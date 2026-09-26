@@ -1,262 +1,492 @@
-<?php include __DIR__ . '/layout_child.php'; ?>
+<?php
+/**
+ * 后台 - 帖子管理（layuimini 子页面片段）
+ * ==========================================================================
+ * 由 layout_child.php 包成一个独立文档、跑在外壳的 iframe 里，
+ * 所以这里是纯片段：没有文档声明，没有 html/head/body 标签，也没有任何 htmx 属性。
+ *
+ * 结构照 forums.php（列表页参考实现）：
+ *   fieldset.table-search-fieldset  搜索区
+ *   #threadToolbar                  批量操作（9 个批量动作 + 批量移动）
+ *   #threadTable                    layui table，数据来自 /admin/api/threads
+ *   #threadRowBar                   行内：加精/取消精、锁定/解锁、删除
+ *
+ * 能筛/能排的字段严格按 ThreadController::threadFilters() 来：
+ *   search / username / ip / forum_id / status / date_from / date_to
+ *   sort（id|views|reply_count|created_at）+ dir（asc|desc）
+ * 排序是**服务端**的：layui 自带的点击排序只排当前页缓存，所以关掉 autoSort，
+ * 用 sort 事件把 sort/dir 塞进 where 再重载（见下面的 sort 事件）。
+ *
+ * 变量：$filters, $sort, $forums（$rows/$total 已不再服务端渲染，接口会给）
+ */
 
-<div class="layui-card">
-  <div class="layui-card-header">帖子管理</div>
-  <div class="layui-card-body">
+$filters = is_array($filters ?? null) ? $filters : [];
+$sort    = is_array($sort ?? null) ? $sort : ['field' => 'id', 'dir' => 'desc'];
+$forums  = is_array($forums ?? null) ? $forums : [];
 
-    <!-- 搜索表单 -->
-    <form class="layui-form" lay-filter="threadSearch" style="margin-bottom:16px;">
-      <div class="layui-form-item" style="margin-bottom:0;">
+$esc = static fn(string $key): string
+    => htmlspecialchars((string)($filters[$key] ?? ''), ENT_QUOTES, 'UTF-8');
+
+$curForum  = (int)($filters['forum_id'] ?? 0);
+$curStatus = (string)($filters['status'] ?? '');
+
+// 排序字段白名单，和 Thread::ADMIN_SORTS 保持一致（防止查询串里塞进乱七八糟的值）
+$sortField = (string)($sort['field'] ?? 'id');
+if (!in_array($sortField, ['id', 'views', 'reply_count', 'created_at'], true)) {
+    $sortField = 'id';
+}
+$sortDir = ((string)($sort['dir'] ?? 'desc')) === 'asc' ? 'asc' : 'desc';
+
+/** 首屏 where：带着查询串打开（/admin/threads?search=x）时表格也要按它查 */
+$initialWhere = array_filter([
+    'search'    => trim((string)($filters['search'] ?? '')),
+    'username'  => trim((string)($filters['username'] ?? '')),
+    'ip'        => trim((string)($filters['ip'] ?? '')),
+    'forum_id'  => $curForum,
+    'status'    => $curStatus,
+    'date_from' => trim((string)($filters['date_from'] ?? '')),
+    'date_to'   => trim((string)($filters['date_to'] ?? '')),
+], static fn($v): bool => $v !== '' && $v !== 0);
+
+/** 批量移动的目标板块下拉（在弹层里现拼，交给 json_encode 转义） */
+$forumOptions = [];
+foreach ($forums as $forum) {
+    $forumOptions[] = ['id' => (int)($forum['id'] ?? 0), 'name' => (string)($forum['name'] ?? '')];
+}
+
+// 内联脚本里的数据一律走 json_encode；HEX 系列保证 </script> 之类不会截断脚本
+$jsonFlags = JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT;
+?>
+
+<!-- 搜索（只放接口真正读的字段） -->
+<fieldset class="table-search-fieldset">
+  <legend>搜索信息</legend>
+  <div style="margin:10px 10px 10px 10px">
+    <form class="layui-form layui-form-pane" lay-filter="threadSearchForm" onsubmit="return false">
+      <div class="layui-form-item">
         <div class="layui-inline">
-          <label class="layui-form-label" style="width:70px;">标题</label>
-          <div class="layui-input-inline" style="width:150px;">
-            <input type="text" name="search" placeholder="搜索标题" class="layui-input">
+          <label class="layui-form-label">标题</label>
+          <div class="layui-input-inline">
+            <input type="text" name="search" class="layui-input" placeholder="搜索标题"
+                   value="<?= $esc('search') ?>">
           </div>
         </div>
+
         <div class="layui-inline">
-          <label class="layui-form-label" style="width:70px;">用户名</label>
-          <div class="layui-input-inline" style="width:120px;">
-            <input type="text" name="username" placeholder="用户名" class="layui-input">
+          <label class="layui-form-label">用户名</label>
+          <div class="layui-input-inline">
+            <input type="text" name="username" class="layui-input" placeholder="用户名"
+                   value="<?= $esc('username') ?>">
           </div>
         </div>
+
         <div class="layui-inline">
-          <label class="layui-form-label" style="width:50px;">IP</label>
-          <div class="layui-input-inline" style="width:130px;">
-            <input type="text" name="ip" placeholder="IP地址" class="layui-input">
+          <label class="layui-form-label">IP</label>
+          <div class="layui-input-inline">
+            <input type="text" name="ip" class="layui-input" placeholder="IP 地址"
+                   value="<?= $esc('ip') ?>">
           </div>
         </div>
+
         <div class="layui-inline">
-          <label class="layui-form-label" style="width:70px;">板块</label>
-          <div class="layui-input-inline" style="width:140px;">
-            <select name="forum_id" lay-filter="forumSelect">
+          <label class="layui-form-label">板块</label>
+          <div class="layui-input-inline">
+            <select name="forum_id">
               <option value="0">全部板块</option>
-              <?php foreach ($forums as $f): ?>
-              <option value="<?= (int)$f['id'] ?>"><?= htmlspecialchars($f['name']) ?></option>
+              <?php foreach ($forums as $forum): ?>
+                <?php $fid = (int)($forum['id'] ?? 0); ?>
+                <option value="<?= $fid ?>" <?= $fid === $curForum && $curForum > 0 ? 'selected' : '' ?>>
+                  <?= htmlspecialchars((string)($forum['name'] ?? ''), ENT_QUOTES, 'UTF-8') ?>
+                </option>
               <?php endforeach; ?>
             </select>
           </div>
         </div>
+
         <div class="layui-inline">
-          <label class="layui-form-label" style="width:70px;">状态</label>
-          <div class="layui-input-inline" style="width:120px;">
-            <select name="status" lay-filter="statusSelect">
+          <label class="layui-form-label">状态</label>
+          <div class="layui-input-inline">
+            <select name="status">
               <option value="">全部状态</option>
-              <option value="top">置顶</option>
-              <option value="highlight">精华</option>
-              <option value="locked">锁定</option>
+              <option value="top" <?= $curStatus === 'top' ? 'selected' : '' ?>>置顶</option>
+              <option value="highlight" <?= $curStatus === 'highlight' ? 'selected' : '' ?>>精华</option>
+              <option value="locked" <?= $curStatus === 'locked' ? 'selected' : '' ?>>锁定</option>
             </select>
           </div>
         </div>
+
         <div class="layui-inline">
-          <label class="layui-form-label" style="width:70px;">开始日期</label>
-          <div class="layui-input-inline" style="width:140px;">
-            <input type="text" name="date_from" id="dateFrom" placeholder="开始日期" class="layui-input" autocomplete="off">
+          <label class="layui-form-label">发布起止</label>
+          <div class="layui-input-inline" style="width:140px">
+            <input type="date" name="date_from" class="layui-input" value="<?= $esc('date_from') ?>">
+          </div>
+          <div class="layui-input-inline" style="width:140px">
+            <input type="date" name="date_to" class="layui-input" value="<?= $esc('date_to') ?>">
           </div>
         </div>
+
         <div class="layui-inline">
-          <label class="layui-form-label" style="width:70px;">结束日期</label>
-          <div class="layui-input-inline" style="width:140px;">
-            <input type="text" name="date_to" id="dateTo" placeholder="结束日期" class="layui-input" autocomplete="off">
-          </div>
-        </div>
-        <div class="layui-inline">
-          <button class="layui-btn" lay-submit lay-filter="doSearch">搜索</button>
-          <button type="reset" class="layui-btn layui-btn-primary" id="btnReset">清除</button>
+          <button class="layui-btn layui-btn-primary" lay-submit lay-filter="thread-search">
+            <i class="layui-icon layui-icon-search"></i> 搜索
+          </button>
+          <button type="button" class="layui-btn layui-btn-primary" id="threadSearchReset">重置</button>
         </div>
       </div>
     </form>
-
-    <table id="threadTable" lay-filter="threadTable"></table>
   </div>
-</div>
+</fieldset>
 
-<!-- 表格工具栏 -->
-<script type="text/html" id="toolbarTpl">
+<!-- 批量操作（勾选后点这里；全选由 layui 的 checkbox 列负责） -->
+<script type="text/html" id="threadToolbar">
   <div class="layui-btn-container">
-    <button class="layui-btn layui-btn-danger layui-btn-sm" lay-event="batchDelete">批量删除</button>
-    <button class="layui-btn layui-btn-sm" lay-event="batchLock">批量锁定</button>
-    <button class="layui-btn layui-btn-primary layui-btn-sm" lay-event="batchUnlock">批量解锁</button>
-    <button class="layui-btn layui-btn-warm layui-btn-sm" lay-event="batchTop1">板块置顶</button>
-    <button class="layui-btn layui-btn-warm layui-btn-sm" lay-event="batchTop2">全局置顶</button>
-    <button class="layui-btn layui-btn-primary layui-btn-sm" lay-event="batchTop0">取消置顶</button>
-    <button class="layui-btn layui-btn-normal layui-btn-sm" lay-event="batchHighlight">批量加精</button>
-    <button class="layui-btn layui-btn-primary layui-btn-sm" lay-event="batchUnhighlight">取消加精</button>
-    <button class="layui-btn layui-btn-sm" lay-event="batchMove">批量移动</button>
+    <button class="layui-btn layui-btn-sm layui-btn-danger" lay-event="batch-delete">
+      <i class="fa fa-trash-o"></i> 批量删除
+    </button>
+    <button class="layui-btn layui-btn-sm layui-btn-primary" lay-event="batch-lock">
+      <i class="fa fa-lock"></i> 批量锁定
+    </button>
+    <button class="layui-btn layui-btn-sm layui-btn-primary" lay-event="batch-unlock">
+      <i class="fa fa-unlock"></i> 批量解锁
+    </button>
+    <button class="layui-btn layui-btn-sm layui-btn-primary" lay-event="batch-top-1">板块置顶</button>
+    <button class="layui-btn layui-btn-sm layui-btn-primary" lay-event="batch-top-2">全局置顶</button>
+    <button class="layui-btn layui-btn-sm layui-btn-primary" lay-event="batch-top-0">取消置顶</button>
+    <button class="layui-btn layui-btn-sm" lay-event="batch-highlight">
+      <i class="fa fa-star"></i> 加精
+    </button>
+    <button class="layui-btn layui-btn-sm layui-btn-primary" lay-event="batch-unhighlight">取消加精</button>
+    <button class="layui-btn layui-btn-sm layui-btn-primary" lay-event="batch-move">
+      <i class="fa fa-arrows-h"></i> 批量移动
+    </button>
+    <span class="admin-muted" id="threadSelectedCount" style="margin-left:8px">已选 0 篇</span>
   </div>
-</script>
-<script type="text/html" id="rowBarTpl">
-  <div class="layui-btn-group">
-    <button class="layui-btn layui-btn-xs" lay-event="highlight">{{# if(d.is_highlight){ }}取消精{{# } else { }}加精{{# } }}</button>
-    <button class="layui-btn layui-btn-normal layui-btn-xs" lay-event="lock">{{# if(d.is_locked){ }}解锁{{# } else { }}锁定{{# } }}</button>
-    <button class="layui-btn layui-btn-danger layui-btn-xs" lay-event="delete">删除</button>
-  </div>
-</script>
-<script type="text/html" id="statusTpl">
-  {{# if(parseInt(d.is_top) === 2){ }}<span class="layui-badge layui-bg-red">全局顶</span> {{# } }}
-  {{# if(parseInt(d.is_top) === 1){ }}<span class="layui-badge layui-bg-orange">置顶</span> {{# } }}
-  {{# if(d.is_highlight){ }}<span class="layui-badge layui-bg-green">精华</span> {{# } }}
-  {{# if(d.is_locked){ }}<span class="layui-badge layui-bg-gray">锁定</span> {{# } }}
-  {{# if(!parseInt(d.is_top) && !d.is_highlight && !d.is_locked){ }}<span style="color:#999;">-</span>{{# } }}
-</script>
-<script type="text/html" id="titleTpl"><a href="/thread/{{d.id}}" target="_blank" style="color:#1E9FFF;">{{_esc(d.title)}}</a></script>
-<script type="text/html" id="topTpl">
-  <select lay-filter="topSelect" data-id="{{d.id}}">
-    <option value="0" {{parseInt(d.is_top)===0?'selected':''}}>普通</option>
-    <option value="1" {{parseInt(d.is_top)===1?'selected':''}}>板块顶</option>
-    <option value="2" {{parseInt(d.is_top)===2?'selected':''}}>全局顶</option>
-  </select>
 </script>
 
-<div id="moveModalContent" style="display:none;">
-  <div style="padding:20px;">
-    <form class="layui-form" lay-filter="moveForm">
-      <div class="layui-form-item">
-        <label class="layui-form-label">目标板块</label>
-        <div class="layui-input-block">
-          <select name="target_forum_id" lay-verify="required">
-            <option value="">请选择...</option>
-            <?php foreach ($forums as $f): ?>
-            <option value="<?= (int)$f['id'] ?>"><?= htmlspecialchars($f['name']) ?></option>
-            <?php endforeach; ?>
-          </select>
-        </div>
-      </div>
-    </form>
-  </div>
-</div>
+<!-- 行内操作（模板里能拿到整行数据 d，所以按钮文案跟着状态变） -->
+<script type="text/html" id="threadRowBar">
+  {{# if(parseInt(d.is_highlight, 10) > 0){ }}
+  <a class="layui-btn layui-btn-xs layui-btn-primary" lay-event="unhighlight">取消精</a>
+  {{# } else { }}
+  <a class="layui-btn layui-btn-xs" lay-event="highlight">加精</a>
+  {{# } }}
+  {{# if(parseInt(d.is_locked, 10) === 1){ }}
+  <a class="layui-btn layui-btn-xs layui-btn-primary" lay-event="unlock">解锁</a>
+  {{# } else { }}
+  <a class="layui-btn layui-btn-xs layui-btn-primary" lay-event="lock">锁定</a>
+  {{# } }}
+  <a class="layui-btn layui-btn-xs layui-btn-danger" lay-event="delete">删除</a>
+</script>
+
+<table class="layui-hide" id="threadTable" lay-filter="threadTable"></table>
 
 <script>
-function _esc(s){if(!s)return '';var d=document.createElement('div');d.textContent=s;return d.innerHTML;}
-layui.use(['table', 'form', 'layer', 'laydate'], function(){
-  var table = layui.table, form = layui.form, layer = layui.layer, laydate = layui.laydate, $ = layui.$;
-  var currentWhere = {};
+layui.use(['table', 'form'], function () {
+  var table = layui.table;
+  var form  = layui.form;
+  var $     = layui.jquery;
 
-  laydate.render({ elem: '#dateFrom', type: 'date' });
-  laydate.render({ elem: '#dateTo', type: 'date' });
+  var TABLE_ID = 'threadTable';
 
+  /** 当前查询条件（筛选 + 排序），每次 reload 都整体交给接口 */
+  var lastWhere    = <?= json_encode((object)$initialWhere, $jsonFlags) ?>;
+  var forumOptions = <?= json_encode($forumOptions, $jsonFlags) ?>;
+
+  /** HTML 转义：templet 里的内容都来自用户输入 */
+  function esc(s) {
+    return String(s === null || s === undefined ? '' : s).replace(/[&<>"']/g, function (c) {
+      return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
+    });
+  }
+
+  /** 千分位（原来是 PHP 的 number_format） */
+  function num(n) {
+    return (parseInt(n, 10) || 0).toLocaleString('en-US');
+  }
+
+  /** Unix 秒 → YYYY-MM-DD HH:mm（原来是 PHP 的 date()） */
   function fmtTime(ts) {
-    if (!ts) return '-';
-    var d = new Date(ts * 1000), p = function(n){ return n < 10 ? '0'+n : n; };
-    return d.getFullYear()+'-'+p(d.getMonth()+1)+'-'+p(d.getDate())+' '+p(d.getHours())+':'+p(d.getMinutes());
+    ts = parseInt(ts, 10) || 0;
+    if (!ts) { return '<span class="admin-muted">-</span>'; }
+    var d = new Date(ts * 1000);
+    var p = function (n) { return (n < 10 ? '0' : '') + n; };
+
+    return '<span class="admin-muted">'
+         + d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate())
+         + ' ' + p(d.getHours()) + ':' + p(d.getMinutes())
+         + '</span>';
   }
 
   table.render({
-    elem: '#threadTable', id: 'threadTable', url: '/admin/api/threads',
-    toolbar: '#toolbarTpl', defaultToolbar: [], page: true, limit: 20, limits: [10,20,30,50],
+    elem: '#threadTable',
+    url: '/admin/api/threads',
+    toolbar: '#threadToolbar',
+    defaultToolbar: ['filter', 'print'],
+    where: lastWhere,
+    // 排序完全交给服务端：layui 自带的排序只排当前页缓存，这里必须关掉
     autoSort: false,
+    initSort: { field: <?= json_encode($sortField) ?>, type: <?= json_encode($sortDir) ?> },
     cols: [[
-      {type:'checkbox', fixed:'left'},
-      {field:'id', title:'ID', width:80, sort:true},
-      {field:'title', title:'标题', minWidth:200, templet:'#titleTpl'},
-      {field:'forum_name', title:'板块', width:120, templet:function(d){return _esc(d.forum_name)||'-';}},
-      {field:'username', title:'作者', width:100, templet:function(d){return _esc(d.nickname||d.username)||'-';}},
-      {field:'views', title:'浏览', width:80, sort:true},
-      {field:'reply_count', title:'回复', width:80, sort:true},
-      {field:'status', title:'状态', width:180, templet:'#statusTpl'},
-      {field:'created_at', title:'发布时间', width:160, sort:true, templet:function(d){return fmtTime(d.created_at);}},
-      {field:'top_action', title:'置顶', width:120, templet:'#topTpl'},
-      {fixed:'right', title:'操作', width:200, toolbar:'#rowBarTpl'}
+      { type: 'checkbox', width: 50 },
+      { field: 'id', width: 80, title: 'ID', sort: true, templet: function (d) {
+          return '<span class="admin-muted admin-num">' + (parseInt(d.id, 10) || 0) + '</span>';
+      } },
+      { field: 'title', minWidth: 220, title: '标题', templet: function (d) {
+          var title = esc(d.title);
+          var id    = parseInt(d.id, 10) || 0;
+
+          return '<a class="admin-ellipsis" href="/thread/' + id + '" target="_blank"'
+               + ' rel="noopener noreferrer" title="' + title + '">' + title + '</a>';
+      } },
+      { field: 'forum_name', width: 130, title: '板块', templet: function (d) {
+          return d.forum_name
+              ? '<span class="admin-muted">' + esc(d.forum_name) + '</span>'
+              : '<span class="admin-muted">-</span>';
+      } },
+      { field: 'username', width: 110, title: '作者', templet: function (d) {
+          var author = (d.nickname || '') !== '' ? d.nickname : d.username;
+
+          return author ? esc(author) : '<span class="admin-muted">-</span>';
+      } },
+      { field: 'views', width: 100, title: '浏览', sort: true, align: 'right', templet: function (d) {
+          return '<span class="admin-muted admin-num">' + num(d.views) + '</span>';
+      } },
+      { field: 'reply_count', width: 100, title: '回复', sort: true, align: 'right', templet: function (d) {
+          return '<span class="admin-muted admin-num">' + num(d.reply_count) + '</span>';
+      } },
+      { field: 'is_top', width: 160, title: '状态', templet: function (d) {
+          var top  = parseInt(d.is_top, 10) || 0;
+          var html = '';
+
+          if (top === 2) { html += '<span class="layui-badge">全局顶</span> '; }
+          if (top === 1) { html += '<span class="admin-tag admin-tag-top">置顶</span> '; }
+          if (parseInt(d.is_highlight, 10) > 0) { html += '<span class="admin-tag admin-tag-highlight">精华</span> '; }
+          if (parseInt(d.is_locked, 10) === 1) { html += '<span class="admin-tag admin-tag-locked">锁定</span> '; }
+
+          return html || '<span class="admin-muted">—</span>';
+      } },
+      { field: 'created_at', width: 170, title: '发布时间', sort: true, templet: function (d) {
+          return fmtTime(d.created_at);
+      } },
+      // 原页面这一列是每行的置顶下拉（普通/板块顶/全局顶），照旧保留：
+      // 单元格里放一个原生 select，change 时提交 /admin/threads/toggle-top
+      { field: 'top_level', width: 120, title: '置顶', align: 'center', templet: function (d) {
+          var top = parseInt(d.is_top, 10) || 0;
+          var id  = parseInt(d.id, 10) || 0;
+          var sel = function (v) { return top === v ? ' selected' : ''; };
+
+          return '<select class="layui-input thread-top-select" lay-ignore'
+               + ' data-id="' + id + '" aria-label="置顶级别"'
+               + ' style="height:28px;padding:0 4px;line-height:28px">'
+               + '<option value="0"' + sel(0) + '>普通</option>'
+               + '<option value="1"' + sel(1) + '>板块顶</option>'
+               + '<option value="2"' + sel(2) + '>全局顶</option>'
+               + '</select>';
+      } },
+      { title: '操作', minWidth: 190, toolbar: '#threadRowBar', align: 'center' }
     ]],
-    parseData: function(res){ return {code:res.code, msg:res.msg, count:res.count, data:res.data}; },
-    done: function(res, curr, count){
-      // 延迟渲染以确保 DOM 已更新
-      setTimeout(function(){
-        form.render('select');
-      }, 0);
+    page: true,
+    limit: 20,
+    limits: [10, 20, 30, 50],
+    skin: 'line',
+    text: { none: '没有匹配的帖子，换个筛选条件试试' }
+  });
+
+  // ---------------- 勾选数量（原页面的「已选 N 篇」） ----------------
+  function selectedRows() {
+    return table.checkStatus(TABLE_ID).data || [];
+  }
+
+  function updateSelected() {
+    var $count = $('#threadSelectedCount');
+    if ($count.length) {
+      $count.text('已选 ' + selectedRows().length + ' 篇');
+    }
+  }
+
+  table.on('checkbox(threadTable)', function () {
+    updateSelected();
+  });
+
+  // ---------------- 批量操作 ----------------
+  /** 组装批量接口的入参；没勾选时给个提示并返回 null */
+  function batchPayload(action, extra) {
+    var rows = selectedRows();
+    if (!rows.length) {
+      AdminUi.warn('请先选择要操作的帖子');
+      return null;
+    }
+
+    var data = { action: action, ids: rows.map(function (r) { return parseInt(r.id, 10) || 0; }) };
+
+    return $.extend(data, extra || {});
+  }
+
+  function batchRun(action, extra, confirmText) {
+    var data = batchPayload(action, extra);
+    if (!data) { return; }
+
+    var done = function () {
+      table.reload(TABLE_ID);
+      updateSelected();
+    };
+
+    if (confirmText) {
+      AdminUi.confirmPost(confirmText, '/admin/threads/batch', data, done);
+    } else {
+      AdminUi.post('/admin/threads/batch', data, done);
+    }
+  }
+
+  /** 批量移动：原来的 Bootstrap modal 换成 layer 弹层里的 target_forum_id 下拉 */
+  function openMove() {
+    var data = batchPayload('move');
+    if (!data) { return; }
+
+    var options = '';
+    for (var i = 0; i < forumOptions.length; i++) {
+      options += '<option value="' + forumOptions[i].id + '">' + esc(forumOptions[i].name) + '</option>';
+    }
+
+    var html = '<form class="layui-form" lay-filter="threadMoveForm" style="padding:20px 24px 0" onsubmit="return false">'
+             + '<div class="layui-form-item">'
+             + '<label class="layui-form-label">目标板块</label>'
+             + '<div class="layui-input-block">'
+             + '<select name="target_forum_id" id="threadMoveTarget">'
+             + '<option value="">请选择...</option>' + options
+             + '</select></div></div></form>';
+
+    layui.layer.open({
+      type: 1,
+      title: '移动帖子到板块',
+      area: ['420px', '240px'],
+      shade: 0.2,
+      shadeClose: false,
+      content: html,
+      btn: ['确认移动', '取消'],
+      success: function () {
+        form.render('select', 'threadMoveForm');
+      },
+      yes: function (index) {
+        var target = parseInt($('#threadMoveTarget').val(), 10) || 0;
+        if (target <= 0) {
+          AdminUi.warn('请选择目标板块');
+          return false;   // 不关弹层，让用户继续选
+        }
+
+        AdminUi.post('/admin/threads/batch', $.extend({}, data, { target_forum_id: target }), function () {
+          layui.layer.close(index);
+          table.reload(TABLE_ID);
+          updateSelected();
+        });
+      }
+    });
+  }
+
+  table.on('toolbar(threadTable)', function (obj) {
+    switch (obj.event) {
+      case 'batch-delete':
+        batchRun('delete', null, '确定要批量删除选中的帖子吗？删除后不可恢复。');
+        break;
+      case 'batch-lock':
+        batchRun('lock');
+        break;
+      case 'batch-unlock':
+        batchRun('unlock');
+        break;
+      case 'batch-top-1':
+        batchRun('top', { level: 1 });
+        break;
+      case 'batch-top-2':
+        batchRun('top', { level: 2 });
+        break;
+      case 'batch-top-0':
+        batchRun('top', { level: 0 });
+        break;
+      case 'batch-highlight':
+        batchRun('highlight');
+        break;
+      case 'batch-unhighlight':
+        batchRun('unhighlight');
+        break;
+      case 'batch-move':
+        openMove();
+        break;
     }
   });
 
-  form.on('submit(doSearch)', function(data){
-    currentWhere = {};
-    if(data.field.search) currentWhere.search = data.field.search;
-    if(data.field.username) currentWhere.username = data.field.username;
-    if(data.field.ip) currentWhere.ip = data.field.ip;
-    if(data.field.forum_id && data.field.forum_id!=='0') currentWhere.forum_id = data.field.forum_id;
-    if(data.field.status) currentWhere.status = data.field.status;
-    if(data.field.date_from) currentWhere.date_from = data.field.date_from;
-    if(data.field.date_to) currentWhere.date_to = data.field.date_to;
-    table.reload('threadTable', {where:currentWhere, page:{curr:1}});
-    return false;
-  });
-  $('#btnReset').on('click', function(){ currentWhere = {}; table.reload('threadTable', {where:{}, page:{curr:1}}); });
+  // ---------------- 行内操作 ----------------
+  table.on('tool(threadTable)', function (obj) {
+    var id = parseInt(obj.data.id, 10) || 0;
 
-  // 服务端排序
-  table.on('sort(threadTable)', function(obj){
-    table.reload('threadTable', {
-      initSort: obj,
-      where: $.extend({}, currentWhere, {sort: obj.field, dir: obj.type})
-    });
-  });
-
-  form.on('select(topSelect)', function(data){
-    var id = parseInt($(data.elem).attr('data-id')), level = parseInt(data.value);
-    $.ajax({ url:'/admin/threads/toggle-top', type:'POST', contentType:'application/json',
-      data: JSON.stringify({thread_id:id, level:level}),
-      success: function(res){
-        if(res.code===0||res.success){ layer.msg('操作成功',{icon:1}); table.reload('threadTable'); }
-        else { layer.msg(res.msg||res.message||'操作失败',{icon:2}); }
-      }, error: function(){ layer.msg('请求失败',{icon:2}); }
-    });
-  });
-
-  table.on('toolbar(threadTable)', function(obj){
-    var cs = table.checkStatus('threadTable'), data = cs.data;
-    if(!data.length){ layer.msg('请先选择帖子',{icon:0}); return; }
-    var ids = data.map(function(d){return d.id;}), ev = obj.event;
-    if(ev==='batchDelete'){ layer.confirm('确定批量删除 '+ids.length+' 篇帖子？',{icon:3},function(i){layer.close(i);batchReq({ids:ids,action:'delete'});}); }
-    else if(ev==='batchLock') batchReq({ids:ids,action:'lock'});
-    else if(ev==='batchUnlock') batchReq({ids:ids,action:'unlock'});
-    else if(ev==='batchTop0') batchReq({ids:ids,action:'top',level:0});
-    else if(ev==='batchTop1') batchReq({ids:ids,action:'top',level:1});
-    else if(ev==='batchTop2') batchReq({ids:ids,action:'top',level:2});
-    else if(ev==='batchHighlight') batchReq({ids:ids,action:'highlight'});
-    else if(ev==='batchUnhighlight') batchReq({ids:ids,action:'unhighlight'});
-    else if(ev==='batchMove') openMoveModal(ids);
-  });
-
-  table.on('tool(threadTable)', function(obj){
-    var d = obj.data, ev = obj.event;
-    if(ev==='highlight'){
-      $.ajax({url:'/admin/threads/toggle-highlight',type:'POST',contentType:'application/json',data:JSON.stringify({thread_id:d.id}),
-        success:function(r){if(r.code===0||r.success){layer.msg('操作成功',{icon:1});table.reload('threadTable');}else{layer.msg(r.msg||r.message||'失败',{icon:2});}},
-        error:function(){layer.msg('请求失败',{icon:2});}});
-    } else if(ev==='lock'){
-      var act = d.is_locked?'unlock':'lock';
-      $.ajax({url:'/admin/threads/batch',type:'POST',contentType:'application/json',data:JSON.stringify({ids:[d.id],action:act}),
-        success:function(r){if(r.code===0||r.success){layer.msg('操作成功',{icon:1});table.reload('threadTable');}else{layer.msg(r.msg||r.message||'失败',{icon:2});}},
-        error:function(){layer.msg('请求失败',{icon:2});}});
-    } else if(ev==='delete'){
-      layer.confirm('确定删除？',{icon:3},function(i){layer.close(i);
-        $.ajax({url:'/admin/threads/delete',type:'POST',contentType:'application/json',data:JSON.stringify({thread_id:d.id}),
-          success:function(r){if(r.code===0||r.success){layer.msg('已删除',{icon:1});table.reload('threadTable');}else{layer.msg(r.msg||r.message||'失败',{icon:2});}},
-          error:function(){layer.msg('请求失败',{icon:2});}});
+    if (obj.event === 'highlight' || obj.event === 'unhighlight') {
+      // 接口不给 level 时按当前状态取反，所以两个按钮同一个端点
+      AdminUi.post('/admin/threads/toggle-highlight', { thread_id: id }, function () {
+        table.reload(TABLE_ID);
+      });
+    } else if (obj.event === 'lock' || obj.event === 'unlock') {
+      AdminUi.post('/admin/threads/batch', { action: obj.event, ids: [id] }, function () {
+        table.reload(TABLE_ID);
+      });
+    } else if (obj.event === 'delete') {
+      AdminUi.confirmPost('确定要删除这篇帖子吗？', '/admin/threads/delete', { thread_id: id }, function () {
+        table.reload(TABLE_ID);
+        updateSelected();
       });
     }
   });
 
-  function batchReq(params){
-    var l=layer.load(1);
-    $.ajax({url:'/admin/threads/batch',type:'POST',contentType:'application/json',data:JSON.stringify(params),
-      success:function(r){layer.close(l);if(r.code===0||r.success){layer.msg(r.msg||r.message||'操作成功',{icon:1});table.reload('threadTable');}else{layer.msg(r.msg||r.message||'失败',{icon:2});}},
-      error:function(){layer.close(l);layer.msg('请求失败',{icon:2});}});
-  }
+  // ---------------- 行内「置顶」下拉（templet 里渲染的 select） ----------------
+  $(document).on('change', '.thread-top-select', function () {
+    var $sel  = $(this);
+    var id    = parseInt($sel.attr('data-id'), 10) || 0;
+    var level = parseInt($sel.val(), 10) || 0;
 
-  var moveIds=[];
-  function openMoveModal(ids){
-    moveIds=ids;
-    layer.open({type:1,title:'移动帖子到板块',area:['420px','220px'],content:$('#moveModalContent').html(),btn:['确认移动','取消'],
-      success:function(o){form.render('select','moveForm');},
-      yes:function(idx,o){
-        var v=o.find('select[name="target_forum_id"]').val();
-        if(!v){layer.msg('请选择目标板块',{icon:2});return;}
-        var l=layer.load(1);
-        $.ajax({url:'/admin/threads/batch',type:'POST',contentType:'application/json',data:JSON.stringify({ids:moveIds,action:'move',target_forum_id:parseInt(v)}),
-          success:function(r){layer.close(l);if(r.code===0||r.success){layer.msg('移动成功',{icon:1});layer.close(idx);table.reload('threadTable');}else{layer.msg(r.msg||r.message||'失败',{icon:2});}},
-          error:function(){layer.close(l);layer.msg('请求失败',{icon:2});}});
-      }
+    if (!id) { return; }
+
+    AdminUi.post('/admin/threads/toggle-top', { thread_id: id, level: level }, function () {
+      table.reload(TABLE_ID);
     });
-  }
+  });
+
+  // ---------------- 搜索 / 重置 / 排序 ----------------
+  form.on('submit(thread-search)', function (data) {
+    // 搜索框里没有排序字段，服务端就按默认的 id desc 排
+    lastWhere = data.field;
+    table.reload(TABLE_ID, {
+      where: lastWhere,
+      page: { curr: 1 },
+      initSort: { field: 'id', type: 'desc' }
+    });
+
+    return false;   // 阻止 layui 默认的表单提交
+  });
+
+  $('#threadSearchReset').on('click', function () {
+    var formEl = $('form[lay-filter="threadSearchForm"]')[0];
+    if (formEl) { formEl.reset(); }
+    form.render('select', 'threadSearchForm');   // 让 layui 渲染的下拉也回到「全部」
+
+    lastWhere = {};
+    table.reload(TABLE_ID, {
+      where: lastWhere,
+      page: { curr: 1 },
+      initSort: { field: 'id', type: 'desc' }
+    });
+  });
+
+  table.on('sort(threadTable)', function (obj) {
+    // 服务端排序：layui 的 sort:true 只排当前页缓存，必须自己重载并把 sort/dir 传给接口；
+    // Object.assign 保留了当前筛选条件，排序不会把搜索条件丢掉
+    lastWhere = Object.assign({}, lastWhere, {
+      sort: obj.field,
+      dir: obj.type === 'asc' ? 'asc' : 'desc'
+    });
+
+    table.reload(TABLE_ID, {
+      where: lastWhere,
+      page: { curr: 1 },
+      initSort: obj   // 重载后重画表头，靠它把箭头标回当前列
+    });
+  });
 });
 </script>
-
-<?php include __DIR__ . '/layout_child_footer.php'; ?>

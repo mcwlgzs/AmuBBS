@@ -1,115 +1,195 @@
-<?php include __DIR__ . '/layout_child.php'; ?>
+<?php
+/**
+ * 后台 - 标签分类（layuimini 子页面）
+ *
+ * 形状照 forums.php（列表页参考实现）：
+ *   <script type="text/html" id="tagCategoryToolbar"> 顶部工具栏（添加分类）
+ *   <table class="layui-hide" id="tagCategoryTable">   表格占位
+ *   <script type="text/html" id="tagCategoryRowBar">   行内操作（删除）
+ *   layui.use(['table','form','element']) → table.render({url:'/admin/api/tag-categories', ...})
+ *
+ * 搜索区：TagCategory::adminList() 不接受任何筛选参数（tagCategoriesApi() 只是把它
+ * 原样 jsonTable 出去），所以这里**没有**搜索表单。
+ * 分页：api 返回全量 + count，所以 page:false 一次取完。
+ *
+ * 「添加分类」原来是一个可折叠面板：因为不能改 TagController（也就没有独立的表单页
+ * 给 layer 的 iframe 用），这里保留内联表单，改成 layui-collapse + layui 表单，
+ * 提交走 AdminUi.post() + table.reload()。
+ *
+ * 变量：$forums（关联板块下拉，Forum::getOptions()）
+ */
 
-<div class="layui-card">
-  <div class="layui-card-header">
-    标签分类
-    <button class="layui-btn layui-btn-sm" style="float:right;margin-top:4px;" id="btnAddCate">添加分类</button>
+$forums = is_array($forums ?? null) ? $forums : [];
+?>
+
+<!-- 顶部工具栏 -->
+<script type="text/html" id="tagCategoryToolbar">
+  <div class="layui-btn-container">
+    <button class="layui-btn layui-btn-sm" lay-event="add">
+      <i class="layui-icon layui-icon-add-1"></i> 添加分类
+    </button>
   </div>
+</script>
 
-  <!-- 添加表单 -->
-  <div class="layui-card-body" id="addCatePanel" style="display:none;background:#f8fafc;border-bottom:1px solid #e2e8f0;">
-    <form class="layui-form" lay-filter="addCateForm" style="display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap;">
-      <div class="layui-inline">
-        <label class="layui-form-label" style="width:auto;padding:0 10px 0 0;">分类名称</label>
-        <div class="layui-input-inline" style="width:180px;">
-          <input type="text" name="name" class="layui-input" lay-verify="required" placeholder="分类名称">
-        </div>
-      </div>
-      <div class="layui-inline">
-        <label class="layui-form-label" style="width:auto;padding:0 10px 0 0;">关联板块</label>
-        <div class="layui-input-inline" style="width:160px;">
-          <select name="forum_id">
-            <option value="0">全局（所有板块可用）</option>
-            <?php foreach ($forums as $f): ?>
-            <option value="<?= (int)$f['id'] ?>"><?= htmlspecialchars($f['name']) ?></option>
-            <?php endforeach; ?>
-          </select>
-        </div>
-      </div>
-      <div class="layui-inline">
-        <label class="layui-form-label" style="width:auto;padding:0 10px 0 0;">排序</label>
-        <div class="layui-input-inline" style="width:80px;">
-          <input type="number" name="sort_order" class="layui-input" value="0">
-        </div>
-      </div>
-      <div class="layui-inline">
-        <button type="button" class="layui-btn layui-btn-sm" lay-submit lay-filter="submitCate">添加</button>
-      </div>
-    </form>
-  </div>
+<!-- 行内操作 -->
+<script type="text/html" id="tagCategoryRowBar">
+  <a class="layui-btn layui-btn-xs layui-btn-danger" lay-event="delete">删除</a>
+</script>
 
-  <div class="layui-card-body">
-    <p style="font-size:12px;color:#999;margin-bottom:12px;">标签分类可关联到板块，发帖时会显示该板块关联的标签供选择。forum_id=0 表示全局分类。</p>
-    <table id="tagCatTable" lay-filter="tagCatTable"></table>
+<blockquote class="layui-elem-quote layui-quote-nm" style="margin-bottom:10px">
+  标签分类可关联到板块，发帖时会显示该板块关联的标签供选择。<code>全局</code> 表示所有板块都可以用。
+</blockquote>
+
+<!-- 添加分类（可折叠，由工具栏「添加分类」展开） -->
+<div class="layui-collapse" id="addCatePanel" lay-filter="addCatePanel" style="margin-bottom:10px">
+  <div class="layui-colla-item">
+    <h2 class="layui-colla-title">添加标签分类</h2>
+    <div class="layui-colla-content">
+      <form class="layui-form" id="addCateForm" lay-filter="addCateForm" action="">
+
+        <div class="layui-form-item">
+          <div class="layui-inline">
+            <label class="layui-form-label">分类名称</label>
+            <div class="layui-input-inline">
+              <input type="text" name="name" class="layui-input" lay-verify="required"
+                     placeholder="分类名称" autocomplete="off">
+            </div>
+          </div>
+
+          <div class="layui-inline">
+            <label class="layui-form-label">关联板块</label>
+            <div class="layui-input-inline">
+              <select name="forum_id">
+                <option value="0">全局（所有板块可用）</option>
+                <?php foreach ($forums as $f): ?>
+                  <option value="<?= (int)($f['id'] ?? 0) ?>">
+                    <?= htmlspecialchars((string)($f['name'] ?? ''), ENT_QUOTES, 'UTF-8') ?>
+                  </option>
+                <?php endforeach; ?>
+              </select>
+            </div>
+          </div>
+
+          <div class="layui-inline">
+            <label class="layui-form-label">排序</label>
+            <div class="layui-input-inline" style="width:100px">
+              <input type="number" name="sort_order" class="layui-input" value="0" autocomplete="off">
+            </div>
+          </div>
+        </div>
+
+        <div class="layui-form-item" style="margin-bottom:0">
+          <div class="layui-input-block" style="margin-left:0">
+            <button class="layui-btn layui-btn-sm" lay-submit lay-filter="addCateSubmit">添加</button>
+            <button type="button" class="layui-btn layui-btn-sm layui-btn-primary" id="addCateCancel">取消</button>
+          </div>
+        </div>
+      </form>
+    </div>
   </div>
 </div>
 
-<script type="text/html" id="tagCatBarTpl">
-  <button class="layui-btn layui-btn-sm layui-btn-danger" lay-event="delete">删除</button>
-</script>
+<table class="layui-hide" id="tagCategoryTable" lay-filter="tagCategoryTable"></table>
+
+<div class="admin-muted" style="margin-top:8px">共 <span id="tagCategoryCount">0</span> 个</div>
 
 <script>
-layui.use(['form', 'layer', 'table'], function(){
-  var $ = layui.$, layer = layui.layer, form = layui.form, table = layui.table;
+layui.use(['table', 'form', 'element', 'util'], function () {
+  var table = layui.table;
+  var form = layui.form;
+  var $ = layui.jquery;
+  var util = layui.util;
+
+  /** HTML 转义 */
+  function esc(v) {
+    return util.escape(v == null ? '' : String(v));
+  }
 
   table.render({
-    elem: '#tagCatTable',
-    id: 'tagCatTable',
+    elem: '#tagCategoryTable',
     url: '/admin/api/tag-categories',
-    page: false,
+    toolbar: '#tagCategoryToolbar',
+    defaultToolbar: ['filter', 'print'],
     cols: [[
-      {field:'id', title:'ID', width:80, sort:true},
-      {field:'name', title:'名称', minWidth:150},
-      {field:'forum_name', title:'关联板块', minWidth:120, templet:function(d){
-        if(!d.forum_id || d.forum_id==0) return '<span style="color:#999;">全局</span>';
-        return d.forum_name || ('板块#'+d.forum_id);
-      }},
-      {field:'tag_count', title:'标签数', width:90, templet:function(d){return d.tag_count||0;}},
-      {field:'sort_order', title:'排序', width:80},
-      {title:'操作', width:100, align:'center', toolbar:'#tagCatBarTpl'}
+      { field: 'id', width: 80, title: 'ID', sort: true, templet: function (d) {
+          return '<span class="admin-muted">' + (parseInt(d.id, 10) || 0) + '</span>';
+        } },
+      { field: 'name', minWidth: 160, title: '名称', templet: function (d) {
+          return esc(d.name);
+        } },
+      { field: 'forum_id', width: 160, title: '关联板块', templet: function (d) {
+          var forumId = parseInt(d.forum_id, 10) || 0;
+          if (forumId <= 0) { return '<span class="admin-muted">全局</span>'; }
+          var forumName = String(d.forum_name == null ? '' : d.forum_name);
+          return esc(forumName !== '' ? forumName : ('板块#' + forumId));
+        } },
+      { field: 'tag_count', width: 90, title: '标签数', align: 'right', sort: true, templet: function (d) {
+          return '<span class="admin-num">' + (parseInt(d.tag_count, 10) || 0) + '</span>';
+        } },
+      { field: 'sort_order', width: 80, title: '排序', align: 'right', sort: true, templet: function (d) {
+          return '<span class="admin-muted">' + (parseInt(d.sort_order, 10) || 0) + '</span>';
+        } },
+      { title: '操作', width: 100, toolbar: '#tagCategoryRowBar', align: 'center' }
     ]],
-    text: {none: '暂无标签分类'}
+    page: false,
+    limit: 200,
+    done: function (res, curr, count) {
+      // api 一次返回全量，页码条不显示，数量自己标出来（原来是面板标题里的「共 N 个」）
+      var el = document.getElementById('tagCategoryCount');
+      if (el) { el.textContent = count; }
+    },
+    text: { none: '暂无标签分类，点右上角「添加分类」创建第一个标签分类' },
+    skin: 'line'
   });
 
-  $('#btnAddCate').on('click', function(){ $('#addCatePanel').toggle(); });
+  /** 展开添加面板（layui 的折叠面板：点标题开合，这里模拟一次点击） */
+  function openAddPanel() {
+    var $content = $('#addCatePanel .layui-colla-content');
+    if (!$content.hasClass('layui-show')) {
+      $('#addCatePanel .layui-colla-title').trigger('click');
+    }
+    $('#addCateForm input[name="name"]').focus();
+  }
 
-  form.on('submit(submitCate)', function(data){
-    var field = data.field;
-    if(!field.name || !field.name.trim()){ layer.msg('请输入分类名称', {icon:2}); return false; }
-    $.ajax({
-      url: '/admin/tag-categories/create',
-      type: 'POST',
-      contentType: 'application/json',
-      data: JSON.stringify(field),
-      success: function(res){
-        if(res.code===0||res.success){ layer.msg('添加成功', {icon:1}); table.reload('tagCatTable'); }
-        else { layer.msg(res.msg||res.message||'操作失败', {icon:2}); }
-      },
-      error: function(){ layer.msg('请求失败', {icon:2}); }
+  /** 收起添加面板并清空表单 */
+  function resetAddPanel() {
+    var $content = $('#addCatePanel .layui-colla-content');
+    if ($content.hasClass('layui-show')) {
+      $('#addCatePanel .layui-colla-title').trigger('click');
+    }
+    document.getElementById('addCateForm').reset();
+    form.render(null, 'addCateForm');
+  }
+
+  // 工具栏事件
+  table.on('toolbar(tagCategoryTable)', function (obj) {
+    if (obj.event === 'add') { openAddPanel(); }
+  });
+
+  // 行操作事件
+  table.on('tool(tagCategoryTable)', function (obj) {
+    var d = obj.data;
+
+    if (obj.event === 'delete') {
+      AdminUi.confirmPost('删除分类后，该分类下的标签将变为未分类。确定删除吗？',
+        '/admin/tag-categories/delete', { id: d.id }, function () {
+          table.reload('tagCategoryTable');
+        });
+    }
+  });
+
+  // 添加分类
+  form.on('submit(addCateSubmit)', function (data) {
+    AdminUi.post('/admin/tag-categories/create', data.field, function () {
+      table.reload('tagCategoryTable');
+      resetAddPanel();
     });
     return false;
   });
 
-  table.on('tool(tagCatTable)', function(obj){
-    var data = obj.data;
-    if(obj.event === 'delete'){
-      layer.confirm('删除分类后，该分类下的标签将变为未分类。确定？', {icon:3, title:'确认删除'}, function(index){
-        $.ajax({
-          url: '/admin/tag-categories/delete',
-          type: 'POST',
-          contentType: 'application/json',
-          data: JSON.stringify({id: data.id}),
-          success: function(res){
-            if(res.code===0||res.success){ layer.msg('删除成功', {icon:1}); table.reload('tagCatTable'); }
-            else { layer.msg(res.msg||res.message||'操作失败', {icon:2}); }
-          },
-          error: function(){ layer.msg('请求失败', {icon:2}); }
-        });
-        layer.close(index);
-      });
-    }
+  // 取消（收起面板并清空）
+  $('#addCateCancel').on('click', function () {
+    resetAddPanel();
   });
 });
 </script>
-
-<?php include __DIR__ . '/layout_child_footer.php'; ?>

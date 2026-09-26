@@ -144,19 +144,12 @@ class RememberToken
 
     /**
      * 获取应用密钥
+     *
+     * 走 Core\AppKey：优先 .env 的 APP_KEY，其次自动生成并持久化到 storage/app_key。
+     * 不再回退到「DB 密码 + 库名」派生（那是可预测密钥，等于没有密钥）。
      */
     private static function getAppKey(): string
     {
-        $key = env('APP_KEY', '');
-        if (empty($key)) {
-            // 回退：组合多个环境因素降低可预测性
-            $dbPass = env('DB_PASSWORD', '');
-            $dbName = env('DB_DATABASE', '');
-            if ($dbPass === '' && $dbName === '') {
-                throw new \RuntimeException('请在 .env 中配置 APP_KEY');
-            }
-            $key = hash('sha256', $dbPass . ':' . $dbName . ':amubbs_remember');
-        }
-        return $key;
+        return \Core\AppKey::get('remember');
     }
 }

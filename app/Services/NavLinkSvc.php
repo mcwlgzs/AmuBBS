@@ -1,7 +1,8 @@
 <?php
 namespace App\Services;
 
-use Core\Database;
+use App\Models\NavCategory;
+use App\Models\NavLink;
 use Core\Cache;
 
 /**
@@ -14,15 +15,12 @@ class NavLinkSvc
      */
     public static function getAll(): array
     {
-        return Cache::get('nav_links:all', function () {
-            $categories = Database::fetchAll(
-                "SELECT * FROM nav_categories WHERE deleted_at IS NULL ORDER BY `rank` DESC, id ASC"
-            );
+        return Cache::get(NavLink::CACHE_ALL, function () {
+            $categories = NavCategory::allOrdered();
+            $catIds = array_column($categories, 'id');
 
             // 一次查出所有链接，PHP 端按 category_id 分组，避免 N+1
-            $links = Database::fetchAll(
-                "SELECT * FROM nav_links WHERE deleted_at IS NULL ORDER BY `rank` DESC, id ASC"
-            );
+            $links = NavLink::getByCategories($catIds);
             $linkMap = [];
             foreach ($links as $link) {
                 $linkMap[$link['category_id']][] = $link;
@@ -41,7 +39,7 @@ class NavLinkSvc
      */
     public static function recordClick(int $linkId): void
     {
-        Database::execute("UPDATE nav_links SET clicks = clicks + 1 WHERE id = ?", [$linkId]);
+        NavLink::incrementClicks($linkId);
     }
 
     /**
@@ -49,12 +47,7 @@ class NavLinkSvc
      */
     public static function createCategory(string $name, string $icon = '', int $rank = 0): int
     {
-        Database::execute(
-            "INSERT INTO nav_categories (name, icon, `rank`, created_at) VALUES (?, ?, ?, ?)",
-            [$name, $icon, $rank, time()]
-        );
-        Cache::delete('nav_links:all');
-        return (int)Database::getConnection()->lastInsertId();
+        return NavCategory::create($name, $icon, $rank);
     }
 
     /**
@@ -62,12 +55,7 @@ class NavLinkSvc
      */
     public static function createLink(int $categoryId, string $name, string $url, string $desc = '', string $icon = '', int $rank = 0): int
     {
-        Database::execute(
-            "INSERT INTO nav_links (category_id, name, url, description, icon, `rank`, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
-            [$categoryId, $name, $url, $desc, $icon, $rank, time()]
-        );
-        Cache::delete('nav_links:all');
-        return (int)Database::getConnection()->lastInsertId();
+        return NavLink::create($categoryId, $name, $url, $desc, $icon, $rank);
     }
 
     /**
@@ -75,8 +63,7 @@ class NavLinkSvc
      */
     public static function deleteLink(int $linkId): void
     {
-        Database::execute("UPDATE nav_links SET deleted_at = ? WHERE id = ?", [time(), $linkId]);
-        Cache::delete('nav_links:all');
+        NavLink::deleteById($linkId);
     }
 
     /**
@@ -84,9 +71,6 @@ class NavLinkSvc
      */
     public static function getPopular(int $limit = 10): array
     {
-        return Database::fetchAll(
-            "SELECT * FROM nav_links WHERE deleted_at IS NULL ORDER BY clicks DESC LIMIT ?",
-            [$limit]
-        );
+        return NavLink::getPopular($limit);
     }
 }

@@ -6,12 +6,15 @@
 
 namespace App\Services;
 
-use Core\Database;
+use App\Models\QueueJob;
 use Core\Cache;
 
 class QueueSvc
 {
     private const REDIS_PREFIX = 'queue:';
+
+    /** 单条任务最大消费次数，超过即删行（避免毒任务无限重试） */
+    private const MAX_ATTEMPTS = 3;
 
     /**
      * 推入队列
@@ -39,10 +42,7 @@ class QueueSvc
 
         // MySQL 降级
         try {
-            Database::execute(
-                "INSERT INTO queue_jobs (queue, payload, available_at, created_at) VALUES (?, ?, ?, ?)",
-                [$queue, json_encode($payload), $item['available_at'], $item['created_at']]
-            );
+            QueueJob::push($queue, json_encode($payload), $item['available_at'], $item['created_at']);
         } catch (\Throwable $e) {
             error_log("Queue push failed: " . $e->getMessage());
         }
@@ -67,25 +67,17 @@ class QueueSvc
 
         // MySQL 降级（使用原子 UPDATE 抢占任务，避免竞态）
         try {
-            $now = time();
-            $reserveToken = bin2hex(random_bytes(4));
-            $affected = Database::execute(
-                "UPDATE queue_jobs SET reserved_at = ?, reserve_token = ? WHERE queue = ? AND available_at <= ? AND reserved_at IS NULL ORDER BY id ASC LIMIT 1",
-                [$now, $reserveToken, $queue, $now]
-            );
-            if ($affected > 0) {
-                $job = Database::fetchOne(
-                    "SELECT * FROM queue_jobs WHERE queue = ? AND reserve_token = ? AND reserved_at = ?",
-                    [$queue, $reserveToken, $now]
-                );
-                if ($job) {
-                    return [
-                        'id' => $job['id'],
-                        'queue' => $job['queue'],
-                        'payload' => json_decode($job['payload'], true),
-                        'created_at' => $job['created_at'],
-                    ];
-                }
+            $job = QueueJob::reserve($queue, time(), bin2hex(random_bytes(4)));
+            if ($job) {
+                return [
+                    'id' => $job['id'],
+                    'queue' => $job['queue'],
+                    'payload' => json_decode($job['payload'], true),
+                    'created_at' => $job['created_at'],
+                    // 租约令牌必须带出去：done()/fail() 要靠它确认「这一行还是我抢的」
+                    'token' => $job['reserve_token'] ?? null,
+                    'attempts' => (int)($job['attempts'] ?? 0),
+                ];
             }
         } catch (\Throwable $e) {
             error_log('[QueueSvc] pop failed: ' . $e->getMessage());
@@ -95,11 +87,13 @@ class QueueSvc
 
     /**
      * 完成任务（MySQL 模式下删除记录）
+     *
+     * @param string|null $token pop() 返回的租约令牌；带上它才不会误删别的 worker 抢到的行
      */
-    public static function done($jobId): void
+    public static function done($jobId, ?string $token = null): void
     {
         try {
-            Database::execute("DELETE FROM queue_jobs WHERE id = ?", [(int)$jobId]);
+            QueueJob::remove((int)$jobId, $token);
         } catch (\Throwable $e) {
             error_log('[QueueSvc] done failed: ' . $e->getMessage());
         }
@@ -117,11 +111,7 @@ class QueueSvc
         }
 
         try {
-            $row = Database::fetchOne(
-                "SELECT COUNT(*) as c FROM queue_jobs WHERE queue = ? AND reserved_at IS NULL",
-                [$queue]
-            );
-            return (int)($row['c'] ?? 0);
+            return QueueJob::unreservedCount($queue);
         } catch (\Throwable $e) {
             return 0;
         }
@@ -141,14 +131,31 @@ class QueueSvc
             try {
                 $handler($job['payload']);
                 if (isset($job['id']) && is_numeric($job['id'])) {
-                    self::done($job['id']);
+                    self::done($job['id'], $job['token'] ?? null);
                 }
                 $processed++;
             } catch (\Throwable $e) {
                 error_log("Queue job failed [{$queue}]: " . $e->getMessage());
-                // Redis 模式下将失败任务推回队列重试
+
+                // MySQL 模式：失败次数持久化在 queue_jobs.attempts，
+                // 达到上限删行（毒任务不再无限重试），否则释放租约等下次调度。
+                if (isset($job['id']) && is_numeric($job['id']) && !empty($job['token'])) {
+                    try {
+                        $outcome = QueueJob::fail((int)$job['id'], (string)$job['token'], self::MAX_ATTEMPTS);
+                        if ($outcome === 'deleted') {
+                            error_log("Queue job permanently failed after " . self::MAX_ATTEMPTS . " attempts [{$queue}]: " . json_encode($job['payload']));
+                        } elseif ($outcome === 'lost') {
+                            error_log("[QueueSvc] 任务租约已失效，跳过重试 [{$queue}] id=" . $job['id']);
+                        }
+                    } catch (\Throwable $ex) {
+                        error_log('[QueueSvc] release failed job error: ' . $ex->getMessage());
+                    }
+                    continue;
+                }
+
+                // Redis 模式（或没有 id 的内存任务）：把 attempts 写回 payload 推回队列尾部重试
                 $attempts = (int)($job['attempts'] ?? 0) + 1;
-                if ($attempts < 3) {
+                if ($attempts < self::MAX_ATTEMPTS) {
                     $job['attempts'] = $attempts;
                     $redis = self::getRedis();
                     if ($redis) {
@@ -156,18 +163,6 @@ class QueueSvc
                     }
                 } else {
                     error_log("Queue job permanently failed after {$attempts} attempts [{$queue}]: " . json_encode($job['payload']));
-                }
-                // MySQL 模式下：超过重试次数则删除任务，否则释放（清除 reserved_at）让 releaseStale 重新调度
-                if (isset($job['id']) && is_numeric($job['id'])) {
-                    if ($attempts >= 3) {
-                        self::done($job['id']);
-                    } else {
-                        try {
-                            Database::execute("UPDATE queue_jobs SET reserved_at = NULL, reserve_token = NULL WHERE id = ?", [(int)$job['id']]);
-                        } catch (\Throwable $ex) {
-                            error_log('[QueueSvc] release failed job error: ' . $ex->getMessage());
-                        }
-                    }
                 }
             }
         }
@@ -213,11 +208,7 @@ LUA;
     public static function releaseStale(int $timeout = 300): int
     {
         try {
-            $cutoff = time() - $timeout;
-            return Database::execute(
-                "UPDATE queue_jobs SET reserved_at = NULL WHERE reserved_at IS NOT NULL AND reserved_at < ?",
-                [$cutoff]
-            );
+            return QueueJob::releaseStale(time() - $timeout);
         } catch (\Throwable $e) {
             return 0;
         }

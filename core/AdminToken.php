@@ -146,18 +146,12 @@ class AdminToken
 
     /**
      * 获取应用密钥
+     *
+     * 走 Core\AppKey（与 RememberToken 同源、不同 context 派生子密钥），
+     * 不再回退到可由 DB 凭据推导的固定密钥。
      */
     private static function getAppKey(): string
     {
-        $key = env('APP_KEY', '');
-        if (empty($key)) {
-            $dbPass = env('DB_PASSWORD', '');
-            $dbName = env('DB_DATABASE', '');
-            if ($dbPass === '' && $dbName === '') {
-                throw new \RuntimeException('请在 .env 中配置 APP_KEY');
-            }
-            $key = hash('sha256', $dbPass . ':' . $dbName . ':amubbs_admin');
-        }
-        return $key;
+        return \Core\AppKey::get('admin');
     }
 }

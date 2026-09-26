@@ -5,194 +5,194 @@
 
 namespace App\Controllers\Admin;
 
-use Core\Database;
 use Core\Cache;
 use Core\Event;
 use App\Events\Events;
+use App\Models\User;
 
 class UserController extends AdminBase
 {
     /**
-     * 构建用户列表查询条件
+     * 从查询串里取出列表筛选条件（纯取值；筛选/排序/SQL 都在 User::adminQuery）
      */
-    private function buildUsersWhere(): array
+    private function userFilters(): array
     {
-        $search = trim($_GET['search'] ?? '');
-        $searchUid = trim($_GET['uid'] ?? '');
-        $searchGroupId = $_GET['group_id'] ?? '';
-        $searchIp = trim($_GET['ip'] ?? '');
-
-        $where = "WHERE u.deleted_at IS NULL";
-        $params = [];
-
-        if ($search !== '') {
-            $escaped = addcslashes($search, '%_\\');
-            $where .= " AND (u.username LIKE ? OR u.email LIKE ? OR u.nickname LIKE ?)";
-            $params[] = "%{$escaped}%";
-            $params[] = "%{$escaped}%";
-            $params[] = "%{$escaped}%";
-        }
-        if ($searchUid !== '') {
-            $where .= " AND u.id = ?";
-            $params[] = (int)$searchUid;
-        }
-        if ($searchGroupId !== '') {
-            $where .= " AND u.group_id = ?";
-            $params[] = (int)$searchGroupId;
-        }
-        if ($searchIp !== '') {
-            $escapedIp = addcslashes($searchIp, '%_\\');
-            $where .= " AND (login_ip LIKE ? OR register_ip LIKE ?)";
-            $params[] = "%{$escapedIp}%";
-            $params[] = "%{$escapedIp}%";
-        }
-
-        return [$where, $params];
-    }
-
-    private function getUsersSortCol(): array
-    {
-        $sortBy = $_GET['sort'] ?? 'id';
-        $sortDir = strtolower($_GET['dir'] ?? 'desc');
-        $allowedSorts = ['id' => 'u.id', 'username' => 'u.username', 'credits' => 'u.credits', 'threads' => 'u.thread_count', 'posts' => 'u.post_count', 'created_at' => 'u.created_at'];
-        $sortCol = $allowedSorts[$sortBy] ?? 'u.id';
-        if (!in_array($sortDir, ['asc', 'desc'], true)) $sortDir = 'desc';
-        return [$sortCol, $sortDir];
+        return [
+            'search'   => trim($_GET['search'] ?? ''),
+            'uid'      => trim($_GET['uid'] ?? ''),
+            'group_id' => (string)($_GET['group_id'] ?? ''),
+            'ip'       => trim($_GET['ip'] ?? ''),
+            'sort'     => (string)($_GET['sort'] ?? 'id'),
+            'dir'      => (string)($_GET['dir'] ?? 'desc'),
+        ];
     }
 
     public function users(): void
     {
         $this->requireAdmin();
-        $groups = Database::fetchAll("SELECT * FROM user_groups ORDER BY id");
-        $this->render('admin/users', [
-            'pageTitle' => '用户管理',
-            'groups' => $groups,
-        ]);
+        $this->renderUsersPage();
     }
 
     /**
-     * 用户列表 API
+     * 用户列表数据（页面与 JSON API 共用同一份查询逻辑）
+     *
+     * @return array{rows: array, total: int}
+     */
+    private function fetchUsers(int $page, int $limit): array
+    {
+        return User::adminList($this->userFilters(), $page, $limit);
+    }
+
+    /**
+     * 渲染用户管理页面片段（GET 与增删改后的刷新共用同一渲染路径）
+     *
+     * 注意：变更操作的 URL 上会带上当前筛选/分页的查询串，
+     * 这样操作完成后重绘页面不会把用户的筛选条件和页码丢掉。
+     */
+    private function renderUsersPage(): void
+    {
+        $page  = max(1, (int)($_GET['page'] ?? 1));
+        $limit = min(50, max(10, (int)($_GET['limit'] ?? 20)));
+
+        $result = $this->fetchUsers($page, $limit);
+
+        $this->renderAdmin('admin/users', [
+            'pageTitle'     => '用户管理',
+            'groups'        => \App\Models\UserGroup::all(),
+            'users'         => $result['rows'],
+            'total'         => $result['total'],
+            'page'          => $page,
+            'pages'         => max(1, (int)ceil($result['total'] / $limit)),
+            'limit'         => $limit,
+            'filters'       => [
+                'search'   => trim($_GET['search'] ?? ''),
+                'uid'      => trim($_GET['uid'] ?? ''),
+                'group_id' => trim((string)($_GET['group_id'] ?? '')),
+                'ip'       => trim($_GET['ip'] ?? ''),
+            ],
+            'sort'          => (string)($_GET['sort'] ?? 'id'),
+            'dir'           => strtolower((string)($_GET['dir'] ?? 'desc')) === 'asc' ? 'asc' : 'desc',
+            'adminGroupId'  => \App\Services\PermissionSvc::ADMIN_GROUP_ID,
+            'currentUserId' => (int)($_SESSION['user_id'] ?? 0),
+        ], 'users');
+    }
+
+    /**
+     * 用户表单片段（layer iframe 弹层用）
+     *
+     * ?action=add                → 添加用户
+     * ?action=manage&id=N        → 管理面板（资料 / 安全 / 用户组 / 危险操作）
+     */
+    public function userForm(): void
+    {
+        $this->requireAdmin();
+
+        $action = (string)($_GET['action'] ?? 'add');
+        $id = max(0, (int)($_GET['id'] ?? 0));
+
+        $groups = \App\Models\UserGroup::all();
+
+        if ($action === 'add') {
+            $this->renderAdmin('admin/partials/user_add', [
+                'pageTitle' => '添加用户',
+                'groups'    => $groups,
+            ], 'users');
+            return;
+        }
+
+        if ($id <= 0) {
+            http_response_code(400);
+            $this->renderAdmin('admin/partials/error', ['pageTitle' => '参数错误', 'message' => '参数错误']);
+            return;
+        }
+
+        $user = User::adminDetail($id);
+        if (!$user) {
+            http_response_code(404);
+            $this->renderAdmin('admin/partials/error', ['pageTitle' => '用户不存在', 'message' => '用户不存在']);
+            return;
+        }
+
+        $this->renderAdmin('admin/partials/user_manage', [
+            'pageTitle'     => '管理用户',
+            'user'          => $user,
+            'groups'        => $groups,
+            'isSelf'        => $id === (int)($_SESSION['user_id'] ?? 0),
+            'adminGroupId'  => \App\Services\PermissionSvc::ADMIN_GROUP_ID,
+        ], 'users');
+    }
+
+    /**
+     * 用户列表 API（保留，供外部 AJAX 调用）
      */
     public function usersApi(): void
     {
         $this->requireAdmin();
 
-        [$where, $params] = $this->buildUsersWhere();
-        [$sortCol, $sortDir] = $this->getUsersSortCol();
         $page = max(1, (int)($_GET['page'] ?? 1));
         $limit = min(50, max(10, (int)($_GET['limit'] ?? 20)));
 
-        $total = (int)(Database::fetchOne("SELECT COUNT(*) as cnt FROM users u {$where}", $params)['cnt'] ?? 0);
-        $offset = ($page - 1) * $limit;
-
-        $users = Database::fetchAll(
-            "SELECT u.id, u.username, u.nickname, u.email, u.avatar, u.group_id, u.credits, u.thread_count, u.post_count, u.login_ip, u.login_at, u.created_at, g.name as group_name FROM users u LEFT JOIN user_groups g ON u.group_id = g.id {$where} ORDER BY {$sortCol} {$sortDir} LIMIT ? OFFSET ?",
-            array_merge($params, [$limit, $offset])
-        );
-
-        $this->layuiJson($users, $total);
+        $result = $this->fetchUsers($page, $limit);
+        $this->jsonTable($result['rows'], $result['total']);
     }
 
+    /**
+     * 单个用户的操作入口
+     *
+     * 业务逻辑抽到 applyUserAction()，这里只负责把结果翻译成响应：
+     * 后台走 respondMutation() 的 JSON 分支（AdminUi 弹 layer.msg 再 reload 表格），
+     * 旧的 JSON 调用方格式不变。
+     */
     public function userUpdate(): void
     {
         $this->requireAdmin();
 
-        $input = json_decode(file_get_contents('php://input'), true);
-        $action = $input['action'] ?? '';
+        $input = $this->input();
+
+        // get_detail 是只读查询，保持纯 JSON（供外部调用方使用）
+        if (($input['action'] ?? '') === 'get_detail') {
+            $user = User::adminDetail((int)($input['user_id'] ?? 0), true);
+            if (!$user) {
+                $this->error('用户不存在');
+                return;
+            }
+            $this->success('ok', ['user' => $user]);
+            return;
+        }
+
+        $result = $this->applyUserAction($input);
+        $this->respondMutation($result['ok'], $result['message'], fn() => $this->renderUsersPage());
+    }
+
+    /**
+     * 执行单个用户操作
+     *
+     * @return array{ok: bool, message: string}
+     */
+    private function applyUserAction(array $input): array
+    {
+        $action = (string)($input['action'] ?? '');
 
         if ($action === 'add_user') {
-            $username = trim($input['username'] ?? '');
-            $email = trim($input['email'] ?? '');
-            $password = $input['password'] ?? '';
-            $groupId = (int)($input['group_id'] ?? 1);
-            $nickname = trim($input['nickname'] ?? '') ?: null;
-
-            if ($username === '' || $email === '' || $password === '') {
-                $this->error('用户名、邮箱和密码不能为空');
-                return;
-            }
-            $uLen = mb_strlen($username);
-            if ($uLen < 3 || $uLen > 20) {
-                $this->error('用户名长度为 3-20 个字符');
-                return;
-            }
-            if (preg_match('/[\x00-\x1f\x7f<>"\'&\\\\\/]/', $username)) {
-                $this->error('用户名包含非法字符');
-                return;
-            }
-            if (strlen($password) < 6) {
-                $this->error('密码长度至少 6 个字符');
-                return;
-            }
-            if (!filter_var($email, FILTER_VALIDATE_EMAIL)) {
-                $this->error('邮箱格式不正确');
-                return;
-            }
-            $exist = Database::fetchOne("SELECT id FROM users WHERE username = ? AND deleted_at IS NULL", [$username]);
-            if ($exist) {
-                $this->error('用户名已存在');
-                return;
-            }
-            $exist = Database::fetchOne("SELECT id FROM users WHERE email = ? AND deleted_at IS NULL", [$email]);
-            if ($exist) {
-                $this->error('邮箱已被注册');
-                return;
-            }
-
-            if ($nickname !== null) {
-                $nLen = mb_strlen($nickname);
-                if ($nLen < 2 || $nLen > 20) {
-                    $this->error('昵称长度为 2-20 个字符');
-                    return;
-                }
-                $existNick = Database::fetchOne("SELECT id FROM users WHERE nickname = ? AND deleted_at IS NULL", [$nickname]);
-                if ($existNick) {
-                    $this->error('昵称已被使用');
-                    return;
-                }
-            }
-
-            $hashed = password_hash($password, PASSWORD_BCRYPT);
-            Database::execute(
-                "INSERT INTO users (username, nickname, email, password, group_id, credits, created_at) VALUES (?, ?, ?, ?, ?, 0, ?)",
-                [$username, $nickname, $email, $hashed, $groupId, time()]
-            );
-            $newId = Database::lastInsertId();
-            Event::dispatch(Events::ADMIN_USER_UPDATED, [
-                'action' => '添加用户',
-                'admin_id' => $_SESSION['user_id'],
-                'detail' => "管理员添加用户 {$username} (ID:{$newId})",
-                'target_type' => 'user',
-                'target_id' => $newId,
-            ]);
-            $this->success('用户已创建', ['id' => $newId]);
-            return;
+            return $this->addUser($input);
         }
 
-        $userId = (int) ($input['user_id'] ?? 0);
-
+        $userId = (int)($input['user_id'] ?? 0);
         if ($userId <= 0) {
-            $this->error('无效的用户ID');
-            return;
+            return ['ok' => false, 'message' => '无效的用户ID'];
         }
 
-        if ($userId === (int) $_SESSION['user_id'] && in_array($action, ['ban', 'delete'], true)) {
-            $this->error('不能对自己执行此操作');
-            return;
+        if ($userId === (int)$_SESSION['user_id'] && in_array($action, ['ban', 'delete'], true)) {
+            return ['ok' => false, 'message' => '不能对自己执行此操作'];
         }
 
         switch ($action) {
             case 'change_group':
-                $groupId = (int) ($input['group_id'] ?? 1);
-                // 从数据库验证用户组是否存在
-                $group = Database::fetchOne("SELECT id FROM user_groups WHERE id = ?", [$groupId]);
-                if (!$group) {
-                    $this->error('无效的用户组');
-                    return;
+                $groupId = (int)($input['group_id'] ?? 1);
+                if (!\App\Models\UserGroup::exists($groupId)) {
+                    return ['ok' => false, 'message' => '无效的用户组'];
                 }
-                Database::execute("UPDATE users SET group_id = ?, updated_at = ? WHERE id = ?", [$groupId, time(), $userId]);
-                Cache::delete("user:profile:{$userId}");
-                Cache::delete("user:group:{$userId}");
+                User::setGroup($userId, $groupId);
                 Event::dispatch(Events::ADMIN_USER_UPDATED, [
                     'action' => '修改用户组',
                     'admin_id' => $_SESSION['user_id'],
@@ -200,89 +200,18 @@ class UserController extends AdminBase
                     'target_type' => 'user',
                     'target_id' => $userId,
                 ]);
-                $this->success('用户组已更新');
-                break;
+                return ['ok' => true, 'message' => '用户组已更新'];
 
             case 'edit_profile':
-                $username = trim($input['username'] ?? '');
-                $email = trim($input['email'] ?? '');
-                $signature = trim($input['signature'] ?? '');
-                $nickname = trim($input['nickname'] ?? '') ?: null;
-                $nicknameColor = trim($input['nickname_color'] ?? '') ?: null;
-
-                // 校验颜色格式
-                if ($nicknameColor !== null && !preg_match('/^#[0-9a-fA-F]{6}$/', $nicknameColor)) {
-                    $nicknameColor = null;
-                }
-
-                if ($username === '' || $email === '') {
-                    $this->error('用户名和邮箱不能为空');
-                    return;
-                }
-                // 用户名格式校验（与注册一致）
-                if (preg_match('/[\x00-\x1f\x7f<>"\'&\\\\\/]/', $username)) {
-                    $this->error('用户名包含非法字符');
-                    return;
-                }
-                $uLen = mb_strlen($username);
-                if ($uLen < 2 || $uLen > 20) {
-                    $this->error('用户名长度为 2-20 个字符');
-                    return;
-                }
-                if (mb_strlen($signature) > 200) {
-                    $this->error('个性签名最多 200 个字符');
-                    return;
-                }
-                if (!filter_var($email, FILTER_VALIDATE_EMAIL)) {
-                    $this->error('邮箱格式不正确');
-                    return;
-                }
-
-                if ($nickname !== null) {
-                    $nLen = mb_strlen($nickname);
-                    if ($nLen < 2 || $nLen > 20) {
-                        $this->error('昵称长度为 2-20 个字符');
-                        return;
-                    }
-                    $existNick = Database::fetchOne("SELECT id FROM users WHERE nickname = ? AND id != ? AND deleted_at IS NULL", [$nickname, $userId]);
-                    if ($existNick) {
-                        $this->error('昵称已被占用');
-                        return;
-                    }
-                }
-
-                $exist = Database::fetchOne("SELECT id FROM users WHERE username = ? AND id != ? AND deleted_at IS NULL", [$username, $userId]);
-                if ($exist) {
-                    $this->error('用户名已被占用');
-                    return;
-                }
-                $exist = Database::fetchOne("SELECT id FROM users WHERE email = ? AND id != ? AND deleted_at IS NULL", [$email, $userId]);
-                if ($exist) {
-                    $this->error('邮箱已被占用');
-                    return;
-                }
-
-                Database::execute("UPDATE users SET username = ?, nickname = ?, email = ?, signature = ?, nickname_color = ?, updated_at = ? WHERE id = ?",
-                    [$username, $nickname, $email, $signature, $nicknameColor, time(), $userId]);
-                Cache::delete("user:profile:{$userId}");
-                Event::dispatch(Events::ADMIN_USER_UPDATED, [
-                    'action' => '编辑用户资料',
-                    'admin_id' => $_SESSION['user_id'],
-                    'detail' => "编辑用户 ID:{$userId} 的资料",
-                    'target_type' => 'user',
-                    'target_id' => $userId,
-                ]);
-                $this->success('用户资料已更新');
-                break;
+                return $this->editUserProfile($input, $userId);
 
             case 'reset_password':
-                $newPassword = $input['new_password'] ?? '';
+                $newPassword = (string)($input['new_password'] ?? '');
                 if (strlen($newPassword) < 6) {
-                    $this->error('密码长度至少 6 个字符');
-                    return;
+                    return ['ok' => false, 'message' => '密码长度至少 6 个字符'];
                 }
                 $hashed = password_hash($newPassword, PASSWORD_BCRYPT);
-                Database::execute("UPDATE users SET password = ?, updated_at = ? WHERE id = ?", [$hashed, time(), $userId]);
+                User::updatePassword($userId, $hashed);
                 \Core\RememberToken::clear($userId);
                 Event::dispatch(Events::ADMIN_USER_UPDATED, [
                     'action' => '重置密码',
@@ -291,15 +220,13 @@ class UserController extends AdminBase
                     'target_type' => 'user',
                     'target_id' => $userId,
                 ]);
-                $this->success('密码已重置');
-                break;
+                return ['ok' => true, 'message' => '密码已重置'];
 
             case 'adjust_credits':
-                $amount = (int) ($input['amount'] ?? 0);
-                $reason = trim($input['reason'] ?? '管理员调整');
+                $amount = (int)($input['amount'] ?? 0);
+                $reason = trim((string)($input['reason'] ?? '')) ?: '管理员调整';
                 if ($amount === 0) {
-                    $this->error('积分变动不能为 0');
-                    return;
+                    return ['ok' => false, 'message' => '积分变动不能为 0'];
                 }
                 $creditSvc = new \App\Services\CreditSvc();
                 if ($amount > 0) {
@@ -307,8 +234,7 @@ class UserController extends AdminBase
                 } else {
                     $ok = $creditSvc->deductCredits($userId, abs($amount), 'admin', $reason, 'admin', (int)$_SESSION['user_id']);
                     if (!$ok) {
-                        $this->error('扣除失败，积分不足');
-                        return;
+                        return ['ok' => false, 'message' => '扣除失败，积分不足'];
                     }
                 }
                 Cache::delete("user:profile:{$userId}");
@@ -319,21 +245,11 @@ class UserController extends AdminBase
                     'target_type' => 'user',
                     'target_id' => $userId,
                 ]);
-                $this->success('积分已调整');
-                break;
+                return ['ok' => true, 'message' => '积分已调整'];
 
             case 'ban':
-                $banGroup = Database::fetchOne("SELECT id FROM user_groups WHERE name = '禁止用户组' LIMIT 1");
-                if (!$banGroup) {
-                    Database::execute("INSERT INTO user_groups (name, permissions, is_admin, created_at) VALUES (?, ?, 0, ?)",
-                        ['禁止用户组', json_encode([]), time()]);
-                    $banGroupId = Database::lastInsertId();
-                } else {
-                    $banGroupId = $banGroup['id'];
-                }
-                Database::execute("UPDATE users SET group_id = ?, updated_at = ? WHERE id = ?", [$banGroupId, time(), $userId]);
-                Cache::delete("user:profile:{$userId}");
-                Cache::delete("user:group:{$userId}");
+                $banGroupId = $this->getOrCreateBanGroup();
+                User::setGroup($userId, $banGroupId);
                 Event::dispatch(Events::ADMIN_USER_UPDATED, [
                     'action' => '封禁用户',
                     'admin_id' => $_SESSION['user_id'],
@@ -341,14 +257,11 @@ class UserController extends AdminBase
                     'target_type' => 'user',
                     'target_id' => $userId,
                 ]);
-                $this->success('用户已封禁');
-                break;
+                return ['ok' => true, 'message' => '用户已封禁'];
 
             case 'unban':
                 $defaultGroup = \App\Services\SettingSvc::getInt('user_default_group', 1);
-                Database::execute("UPDATE users SET group_id = ?, updated_at = ? WHERE id = ?", [$defaultGroup, time(), $userId]);
-                Cache::delete("user:profile:{$userId}");
-                Cache::delete("user:group:{$userId}");
+                User::setGroup($userId, $defaultGroup);
                 Event::dispatch(Events::ADMIN_USER_UPDATED, [
                     'action' => '解封用户',
                     'admin_id' => $_SESSION['user_id'],
@@ -356,8 +269,7 @@ class UserController extends AdminBase
                     'target_type' => 'user',
                     'target_id' => $userId,
                 ]);
-                $this->success('用户已解封');
-                break;
+                return ['ok' => true, 'message' => '用户已解封'];
 
             case 'delete':
                 $userSvc = new \App\Services\UserSvc();
@@ -369,22 +281,147 @@ class UserController extends AdminBase
                     'target_type' => 'user',
                     'target_id' => $userId,
                 ]);
-                $this->success('用户已删除');
-                break;
-
-            case 'get_detail':
-                $user = Database::fetchOne("SELECT id, username, nickname, email, signature, credits, group_id, nickname_color, login_ip, login_at, created_at, thread_count, post_count FROM users WHERE id = ?", [$userId]);
-                if (!$user) {
-                    $this->error('用户不存在');
-                    return;
-                }
-                $this->success('ok', ['user' => $user]);
-                break;
+                return ['ok' => true, 'message' => '用户已删除'];
 
             default:
-                $this->error('未知操作');
-                return;
+                return ['ok' => false, 'message' => '未知操作'];
         }
+    }
+
+    /**
+     * 添加用户
+     *
+     * @return array{ok: bool, message: string}
+     */
+    private function addUser(array $input): array
+    {
+        $username = trim((string)($input['username'] ?? ''));
+        $email = trim((string)($input['email'] ?? ''));
+        $password = (string)($input['password'] ?? '');
+        $groupId = (int)($input['group_id'] ?? 1);
+        $nickname = trim((string)($input['nickname'] ?? '')) ?: null;
+
+        if ($username === '' || $email === '' || $password === '') {
+            return ['ok' => false, 'message' => '用户名、邮箱和密码不能为空'];
+        }
+        $uLen = mb_strlen($username);
+        if ($uLen < 3 || $uLen > 20) {
+            return ['ok' => false, 'message' => '用户名长度为 3-20 个字符'];
+        }
+        if (preg_match('/[\x00-\x1f\x7f<>"\'&\\\\\/]/', $username)) {
+            return ['ok' => false, 'message' => '用户名包含非法字符'];
+        }
+        if (strlen($password) < 6) {
+            return ['ok' => false, 'message' => '密码长度至少 6 个字符'];
+        }
+        if (!filter_var($email, FILTER_VALIDATE_EMAIL)) {
+            return ['ok' => false, 'message' => '邮箱格式不正确'];
+        }
+        if (User::usernameExists($username)) {
+            return ['ok' => false, 'message' => '用户名已存在'];
+        }
+        if (User::emailExists($email)) {
+            return ['ok' => false, 'message' => '邮箱已被注册'];
+        }
+
+        if ($nickname !== null) {
+            $nLen = mb_strlen($nickname);
+            if ($nLen < 2 || $nLen > 20) {
+                return ['ok' => false, 'message' => '昵称长度为 2-20 个字符'];
+            }
+            if (User::nicknameExists($nickname)) {
+                return ['ok' => false, 'message' => '昵称已被使用'];
+            }
+        }
+
+        // 用户组必须是真实存在的，否则会建出一个没有权限归属的账号
+        if (!\App\Models\UserGroup::exists($groupId)) {
+            return ['ok' => false, 'message' => '无效的用户组'];
+        }
+
+        $hashed = password_hash($password, PASSWORD_BCRYPT);
+        $newId = User::create($username, $email, $hashed, $groupId, 0, $nickname);
+        Event::dispatch(Events::ADMIN_USER_UPDATED, [
+            'action' => '添加用户',
+            'admin_id' => $_SESSION['user_id'],
+            'detail' => "管理员添加用户 {$username} (ID:{$newId})",
+            'target_type' => 'user',
+            'target_id' => $newId,
+        ]);
+
+        return ['ok' => true, 'message' => '用户已创建'];
+    }
+
+    /**
+     * 编辑用户资料
+     *
+     * @return array{ok: bool, message: string}
+     */
+    private function editUserProfile(array $input, int $userId): array
+    {
+        $username = trim((string)($input['username'] ?? ''));
+        $email = trim((string)($input['email'] ?? ''));
+        $signature = trim((string)($input['signature'] ?? ''));
+        $nickname = trim((string)($input['nickname'] ?? '')) ?: null;
+        $nicknameColor = trim((string)($input['nickname_color'] ?? '')) ?: null;
+
+        // 校验颜色格式
+        if ($nicknameColor !== null && !preg_match('/^#[0-9a-fA-F]{6}$/', $nicknameColor)) {
+            $nicknameColor = null;
+        }
+
+        if ($username === '' || $email === '') {
+            return ['ok' => false, 'message' => '用户名和邮箱不能为空'];
+        }
+        if (preg_match('/[\x00-\x1f\x7f<>"\'&\\\\\/]/', $username)) {
+            return ['ok' => false, 'message' => '用户名包含非法字符'];
+        }
+        $uLen = mb_strlen($username);
+        if ($uLen < 2 || $uLen > 20) {
+            return ['ok' => false, 'message' => '用户名长度为 2-20 个字符'];
+        }
+        if (mb_strlen($signature) > 200) {
+            return ['ok' => false, 'message' => '个性签名最多 200 个字符'];
+        }
+        if (!filter_var($email, FILTER_VALIDATE_EMAIL)) {
+            return ['ok' => false, 'message' => '邮箱格式不正确'];
+        }
+
+        if ($nickname !== null) {
+            $nLen = mb_strlen($nickname);
+            if ($nLen < 2 || $nLen > 20) {
+                return ['ok' => false, 'message' => '昵称长度为 2-20 个字符'];
+            }
+            if (User::nicknameTakenByOther($nickname, $userId)) {
+                return ['ok' => false, 'message' => '昵称已被占用'];
+            }
+        }
+
+        if (User::usernameTakenByOther($username, $userId)) {
+            return ['ok' => false, 'message' => '用户名已被占用'];
+        }
+        if (User::emailTakenByOther($email, $userId)) {
+            return ['ok' => false, 'message' => '邮箱已被占用'];
+        }
+
+        User::adminUpdate($userId, $username, $nickname, $email, $signature, $nicknameColor);
+        Event::dispatch(Events::ADMIN_USER_UPDATED, [
+            'action' => '编辑用户资料',
+            'admin_id' => $_SESSION['user_id'],
+            'detail' => "编辑用户 ID:{$userId} 的资料",
+            'target_type' => 'user',
+            'target_id' => $userId,
+        ]);
+
+        return ['ok' => true, 'message' => '用户资料已更新'];
+    }
+
+    /**
+     * 取「禁止用户组」的 ID，不存在则创建
+     */
+    private function getOrCreateBanGroup(): int
+    {
+        return \App\Models\UserGroup::ensureByName(\App\Models\UserGroup::BANNED_NAME);
     }
 
     /**
@@ -394,23 +431,23 @@ class UserController extends AdminBase
     {
         $this->requireAdmin();
 
-        $input = json_decode(file_get_contents('php://input'), true);
-        $action = $input['action'] ?? '';
+        $input = $this->input();
+        $action = (string)($input['action'] ?? '');
         $ids = $input['ids'] ?? [];
 
         if (!is_array($ids) || empty($ids)) {
-            $this->error('请选择用户');
+            $this->respondMutation(false, '请选择用户', fn() => $this->renderUsersPage());
             return;
         }
 
         // 过滤为正整数
         $ids = array_values(array_unique(array_map('intval', array_filter($ids, fn($v) => (int)$v > 0))));
         if (empty($ids)) {
-            $this->error('无效的用户ID');
+            $this->respondMutation(false, '无效的用户ID', fn() => $this->renderUsersPage());
             return;
         }
         if (count($ids) > 100) {
-            $this->error('单次最多操作100个用户');
+            $this->respondMutation(false, '单次最多操作100个用户', fn() => $this->renderUsersPage());
             return;
         }
 
@@ -419,71 +456,64 @@ class UserController extends AdminBase
         if (in_array($action, ['ban', 'delete'], true)) {
             $ids = array_values(array_filter($ids, fn($id) => $id !== $selfId));
             if (empty($ids)) {
-                $this->error('不能对自己执行此操作');
+                $this->respondMutation(false, '不能对自己执行此操作', fn() => $this->renderUsersPage());
                 return;
             }
         }
 
-        $placeholders = implode(',', array_fill(0, count($ids), '?'));
-        $now = time();
+        $result = $this->applyBatchAction($action, $ids, $input);
+        $this->respondMutation($result['ok'], $result['message'], fn() => $this->renderUsersPage());
+    }
+
+    /**
+     * 执行批量操作
+     *
+     * @return array{ok: bool, message: string}
+     */
+    private function applyBatchAction(string $action, array $ids, array $input): array
+    {
         $count = count($ids);
+        $selfId = (int)$_SESSION['user_id'];
 
         switch ($action) {
             case 'ban':
-                $banGroup = Database::fetchOne("SELECT id FROM user_groups WHERE name = '禁止用户组' LIMIT 1");
-                if (!$banGroup) {
-                    Database::execute("INSERT INTO user_groups (name, permissions, is_admin, created_at) VALUES (?, ?, 0, ?)",
-                        ['禁止用户组', json_encode([]), $now]);
-                    $banGroupId = Database::lastInsertId();
-                } else {
-                    $banGroupId = $banGroup['id'];
-                }
-                Database::execute("UPDATE users SET group_id = ?, updated_at = ? WHERE id IN ({$placeholders})", array_merge([$banGroupId, $now], $ids));
-                foreach ($ids as $uid) { Cache::delete("user:profile:{$uid}"); Cache::delete("user:group:{$uid}"); }
+                $banGroupId = $this->getOrCreateBanGroup();
+                User::setGroupBulk($ids, $banGroupId);
                 Event::dispatch(Events::ADMIN_USER_UPDATED, [
                     'action' => '批量封禁',
                     'admin_id' => $selfId,
                     'detail' => "批量封禁 {$count} 个用户: " . implode(',', $ids),
                     'target_type' => 'user',
                 ]);
-                $this->success("已封禁 {$count} 个用户");
-                break;
+                return ['ok' => true, 'message' => "已封禁 {$count} 个用户"];
 
             case 'unban':
                 $defaultGroup = \App\Services\SettingSvc::getInt('user_default_group', 1);
-                Database::execute("UPDATE users SET group_id = ?, updated_at = ? WHERE id IN ({$placeholders})", array_merge([$defaultGroup, $now], $ids));
-                foreach ($ids as $uid) { Cache::delete("user:profile:{$uid}"); Cache::delete("user:group:{$uid}"); }
+                User::setGroupBulk($ids, $defaultGroup);
                 Event::dispatch(Events::ADMIN_USER_UPDATED, [
                     'action' => '批量解封',
                     'admin_id' => $selfId,
                     'detail' => "批量解封 {$count} 个用户: " . implode(',', $ids),
                     'target_type' => 'user',
                 ]);
-                $this->success("已解封 {$count} 个用户");
-                break;
+                return ['ok' => true, 'message' => "已解封 {$count} 个用户"];
 
             case 'change_group':
                 $groupId = (int)($input['group_id'] ?? 0);
                 if ($groupId <= 0) {
-                    $this->error('请选择用户组');
-                    return;
+                    return ['ok' => false, 'message' => '请选择用户组'];
                 }
-                // 验证用户组是否存在
-                $groupExists = Database::fetchOne("SELECT id FROM user_groups WHERE id = ?", [$groupId]);
-                if (!$groupExists) {
-                    $this->error('用户组不存在');
-                    return;
+                if (!\App\Models\UserGroup::exists($groupId)) {
+                    return ['ok' => false, 'message' => '用户组不存在'];
                 }
-                Database::execute("UPDATE users SET group_id = ?, updated_at = ? WHERE id IN ({$placeholders})", array_merge([$groupId, $now], $ids));
-                foreach ($ids as $uid) { Cache::delete("user:profile:{$uid}"); Cache::delete("user:group:{$uid}"); }
+                User::setGroupBulk($ids, $groupId);
                 Event::dispatch(Events::ADMIN_USER_UPDATED, [
                     'action' => '批量修改用户组',
                     'admin_id' => $selfId,
                     'detail' => "批量修改 {$count} 个用户的用户组为 {$groupId}",
                     'target_type' => 'user',
                 ]);
-                $this->success("已修改 {$count} 个用户的用户组");
-                break;
+                return ['ok' => true, 'message' => "已修改 {$count} 个用户的用户组"];
 
             case 'delete':
                 $userSvc = new \App\Services\UserSvc();
@@ -502,62 +532,96 @@ class UserController extends AdminBase
                     'detail' => "批量删除 {$deleted} 个用户: " . implode(',', $ids),
                     'target_type' => 'user',
                 ]);
-                $this->success("已删除 {$deleted} 个用户");
-                break;
+                return ['ok' => true, 'message' => "已删除 {$deleted} 个用户"];
 
             default:
-                $this->error('未知操作');
-                return;
+                return ['ok' => false, 'message' => '未知操作'];
         }
     }
 
     // ==================== 用户设置 ====================
 
+    /**
+     * 用户设置：布尔开关型字段
+     *
+     * 页面里每个都配了 hidden=0 + checkbox=1，所以未勾选时会提交 "0"，
+     * 不会出现「关不掉」的情况（旧实现依赖前端 JS 补 false，服务端拿不到就跳过）。
+     */
+    private const USER_SETTING_BOOL_KEYS = [
+        'user_register_enabled', 'user_register_verify', 'user_allow_rename',
+        'user_password_require_mixed', 'user_allow_change_email',
+        'user_show_email', 'user_show_login_ip',
+    ];
+
+    /** 用户设置：文本/数字型字段 */
+    private const USER_SETTING_TEXT_KEYS = [
+        'user_default_group', 'user_default_credits', 'user_banned_usernames',
+        'user_username_min_length', 'user_username_max_length',
+        'user_login_max_attempts', 'user_login_lock_minutes',
+        'user_password_min_length',
+        'user_avatar_max_size', 'user_avatar_formats', 'user_default_avatar',
+        'user_signature_max_length', 'user_bio_max_length',
+    ];
+
     public function userSettings(): void
     {
         $this->requireAdmin();
+        $this->renderUserSettingsPage();
+    }
 
-        $rows = Database::fetchAll("SELECT `key`, `value` FROM settings WHERE `key` LIKE 'user_%'");
-        $settings = [];
-        foreach ($rows as $row) {
-            $settings[$row['key']] = $row['value'];
-        }
+    /**
+     * 读取全部 user_* 设置（键 => 值）
+     */
+    private function fetchUserSettings(): array
+    {
+        $settings = \App\Services\SettingSvc::allWithPrefix('user_');
 
-        $groups = Database::fetchAll("SELECT id, name FROM user_groups ORDER BY id");
+        return $settings;
+    }
 
-        $this->render('admin/user_settings', [
+    /**
+     * 渲染用户设置页面片段（GET 与保存后的刷新共用同一渲染路径）
+     */
+    private function renderUserSettingsPage(): void
+    {
+        $this->renderAdmin('admin/user_settings', [
             'pageTitle' => '用户设置',
-            'settings' => $settings,
-            'groups' => $groups,
-        ]);
+            'settings'  => $this->fetchUserSettings(),
+            'groups'    => \App\Models\UserGroup::all(),
+        ], 'user_settings');
     }
 
     public function userSettingsSave(): void
     {
         $this->requireAdmin();
 
-        $input = json_decode(file_get_contents('php://input'), true);
-        $allowed = [
-            'user_register_enabled', 'user_register_verify', 'user_default_group',
-            'user_default_credits', 'user_banned_usernames',
-            'user_username_min_length', 'user_username_max_length', 'user_allow_rename',
-            'user_login_max_attempts', 'user_login_lock_minutes',
-            'user_password_min_length', 'user_password_require_mixed',
-            'user_avatar_max_size', 'user_avatar_formats', 'user_default_avatar',
-            'user_signature_max_length', 'user_allow_change_email',
-            'user_show_email', 'user_show_login_ip', 'user_bio_max_length',
-        ];
-        $now = time();
+        $input = $this->input();
 
-        foreach ($allowed as $key) {
+        // 用户名长度上下限必须自洽，否则注册会被卡死在永远无法满足的规则上
+        $minLen = (int)($input['user_username_min_length'] ?? 3);
+        $maxLen = (int)($input['user_username_max_length'] ?? 20);
+        if ($minLen > $maxLen) {
+            $this->respondMutation(false, '用户名最小长度不能大于最大长度', fn() => $this->renderUserSettingsPage());
+            return;
+        }
+        if ($minLen < 1) {
+            $this->respondMutation(false, '用户名最小长度至少为 1', fn() => $this->renderUserSettingsPage());
+            return;
+        }
+
+        $values = [];
+
+        foreach (self::USER_SETTING_BOOL_KEYS as $key) {
+            $values[$key] = !empty($input[$key]) ? '1' : '0';
+        }
+
+        foreach (self::USER_SETTING_TEXT_KEYS as $key) {
             if (array_key_exists($key, $input)) {
-                $value = is_bool($input[$key]) ? ($input[$key] ? '1' : '0') : trim((string)$input[$key]);
-                Database::execute(
-                    "INSERT INTO settings (`key`, `value`, `updated_at`) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE `value` = ?, `updated_at` = ?",
-                    [$key, $value, $now, $value, $now]
-                );
+                $values[$key] = trim((string)$input[$key]);
             }
         }
+
+        \App\Models\Setting::setMany($values);
 
         \App\Services\SettingSvc::clearCache();
         Event::dispatch(Events::ADMIN_SETTINGS_SAVED, [
@@ -566,7 +630,7 @@ class UserController extends AdminBase
             'detail' => '修改了用户相关设置',
             'target_type' => 'settings',
         ]);
-        $this->success('用户设置已保存');
+        $this->respondMutation(true, '用户设置已保存', fn() => $this->renderUserSettingsPage());
     }
 
     // ==================== 会员设置 ====================
@@ -574,50 +638,125 @@ class UserController extends AdminBase
     public function vipSettings(): void
     {
         $this->requireAdmin();
+        $this->renderVipSettingsPage();
+    }
 
-        $vipEnabled = \App\Services\SettingSvc::getBool('vip_enabled', true);
+    /**
+     * 会员等级配置（列表形式，含 level 字段）
+     *
+     * 注意：等级数量完全由数据决定，不再像旧前端那样写死 4 个，
+     * 否则后台一旦配了第 5 个等级，保存时会被静默丢掉。
+     */
+    private function fetchVipLevels(): array
+    {
         $vipLevelsJson = \App\Services\SettingSvc::get('vip_levels', '');
         $vipLevels = json_decode($vipLevelsJson, true);
-        if (!is_array($vipLevels) || empty($vipLevels)) {
-            // getConfig() 返回按 level 索引的 map（含 level 0 普通用户），这里只取 level >= 1 的等级
-            $all = \App\Services\VipSvc::getConfig();
-            $vipLevels = [];
-            foreach ($all as $lvl => $info) {
-                if ($lvl < 1) continue;
-                $info['level'] = $lvl;
-                $vipLevels[] = $info;
+
+        if (is_array($vipLevels) && !empty($vipLevels)) {
+            // 统一补上 level 字段并排序，避免存进来的 JSON 缺字段/乱序
+            $normalized = [];
+            foreach ($vipLevels as $lv) {
+                if (!is_array($lv)) {
+                    continue;
+                }
+                $lvl = (int)($lv['level'] ?? 0);
+                if ($lvl < 1) {
+                    continue;
+                }
+                $normalized[$lvl] = [
+                    'level'    => $lvl,
+                    'name'     => (string)($lv['name'] ?? ''),
+                    'color'    => (string)($lv['color'] ?? '#999999'),
+                    'icon'     => (string)($lv['icon'] ?? ''),
+                    'price'    => (int)($lv['price'] ?? 0),
+                    'benefits' => is_array($lv['benefits'] ?? null) ? $lv['benefits'] : [],
+                ];
+            }
+            if (!empty($normalized)) {
+                ksort($normalized);
+                return array_values($normalized);
             }
         }
 
-        $this->render('admin/vip_settings', [
-            'pageTitle' => '会员设置',
-            'vipEnabled' => $vipEnabled,
-            'vipLevels' => $vipLevels,
-        ]);
+        // 回退到 VipSvc 的内置默认等级（getConfig() 含 level 0 普通用户，这里只取 level >= 1）
+        $all = \App\Services\VipSvc::getConfig();
+        $levels = [];
+        foreach ($all as $lvl => $info) {
+            if ($lvl < 1) {
+                continue;
+            }
+            $info['level'] = $lvl;
+            $info['benefits'] = is_array($info['benefits'] ?? null) ? $info['benefits'] : [];
+            $levels[] = $info;
+        }
+
+        return $levels;
+    }
+
+    /**
+     * 渲染会员设置页面片段（GET 与保存后的刷新共用同一渲染路径）
+     */
+    private function renderVipSettingsPage(): void
+    {
+        $this->renderAdmin('admin/vip_settings', [
+            'pageTitle'  => '会员设置',
+            'vipEnabled' => \App\Services\SettingSvc::getBool('vip_enabled', true),
+            'vipLevels'  => $this->fetchVipLevels(),
+        ], 'vip_settings');
     }
 
     public function vipSettingsSave(): void
     {
         $this->requireAdmin();
 
-        $input = json_decode(file_get_contents('php://input'), true);
-        $now = time();
+        $input = $this->input();
 
-        foreach (['vip_enabled', 'vip_levels'] as $key) {
-            if (array_key_exists($key, $input)) {
-                $raw = $input[$key];
-                // vip_levels 可能是数组（前端传 JSON 对象），需要 json_encode
-                if ($key === 'vip_levels' && is_array($raw)) {
-                    $value = json_encode($raw, JSON_UNESCAPED_UNICODE);
-                } else {
-                    $value = trim((string)$raw);
+        // vip_enabled：表单里配了 hidden=0 + checkbox=1
+        $vipEnabled = !empty($input['vip_enabled']) ? '1' : '0';
+
+        // 等级数据来自 levels[i][...]，等级号以显式隐藏域为准（不再假设 i+1）
+        $levels = [];
+        $rawLevels = $input['levels'] ?? [];
+        if (is_array($rawLevels)) {
+            // 按显式 level 去重排序，避免表单顺序被改动后等级错位
+            $byLevel = [];
+            foreach ($rawLevels as $row) {
+                if (!is_array($row)) {
+                    continue;
                 }
-                Database::execute(
-                    "INSERT INTO settings (`key`, `value`, `updated_at`) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE `value` = ?, `updated_at` = ?",
-                    [$key, $value, $now, $value, $now]
-                );
+                $lvl = (int)($row['level'] ?? 0);
+                if ($lvl < 1) {
+                    continue;
+                }
+                $benefits = [];
+                foreach (preg_split('/\r\n|\r|\n/', (string)($row['benefits'] ?? '')) as $line) {
+                    $line = trim($line);
+                    if ($line !== '') {
+                        $benefits[] = $line;
+                    }
+                }
+
+                $color = trim((string)($row['color'] ?? ''));
+                if (!preg_match('/^#[0-9a-fA-F]{6}$/', $color)) {
+                    $color = '#999999';
+                }
+
+                $byLevel[$lvl] = [
+                    'level'    => $lvl,
+                    'name'     => trim((string)($row['name'] ?? '')),
+                    'color'    => $color,
+                    'icon'     => trim((string)($row['icon'] ?? '')),
+                    'price'    => max(0, (int)($row['price'] ?? 0)),
+                    'benefits' => $benefits,
+                ];
             }
+            ksort($byLevel);
+            $levels = array_values($byLevel);
         }
+
+        $vipLevelsJson = json_encode($levels, JSON_UNESCAPED_UNICODE);
+
+        \App\Models\Setting::setMany(['vip_enabled' => $vipEnabled, 'vip_levels' => $vipLevelsJson]);
 
         \App\Services\SettingSvc::clearCache();
         Event::dispatch(Events::ADMIN_SETTINGS_SAVED, [
@@ -626,39 +765,7 @@ class UserController extends AdminBase
             'detail' => '修改了 VIP 会员相关设置',
             'target_type' => 'settings',
         ]);
-        $this->success('会员设置已保存');
-    }
-
-    // ==================== 在线用户 ====================
-
-    public function onlineUsers(): void
-    {
-        $this->requireAdmin();
-        $this->render('admin/online_users', ['pageTitle' => '在线用户']);
-    }
-
-    /**
-     * 在线用户列表 API
-     */
-    public function onlineUsersApi(): void
-    {
-        $this->requireAdmin();
-
-        $threshold = time() - 900;
-        $onlineUsers = [];
-        try {
-            $onlineUsers = Database::fetchAll("
-                SELECT s.user_id, s.ip, s.last_activity, u.username, u.avatar
-                FROM sessions s
-                LEFT JOIN users u ON s.user_id = u.id
-                WHERE s.last_activity >= ?
-                ORDER BY s.last_activity DESC
-            ", [$threshold]);
-        } catch (\Throwable $e) {
-            error_log('[Admin:User] onlineUsersApi: ' . $e->getMessage());
-        }
-
-        $this->layuiJson($onlineUsers, count($onlineUsers));
+        $this->respondMutation(true, '会员设置已保存', fn() => $this->renderVipSettingsPage());
     }
 
     /**
@@ -668,33 +775,22 @@ class UserController extends AdminBase
     {
         $this->requireAdmin();
 
-        $page = max(1, (int)($_GET['page'] ?? 1));
-        $limit = min(50, max(10, (int)($_GET['limit'] ?? 20)));
+        $page   = max(1, (int)($_GET['page'] ?? 1));
+        $limit  = min(50, max(10, (int)($_GET['limit'] ?? 20)));
         $search = trim($_GET['search'] ?? '');
 
-        $where = '';
-        $params = [];
-        if ($search !== '') {
-            $where = 'WHERE u.username LIKE ?';
-            $params[] = "%" . addcslashes($search, '%_\\') . "%";
-        }
+        $result = $this->fetchCreditLogs($page, $limit, $search);
+        $this->jsonTable($result['rows'], $result['total']);
+    }
 
-        $total = (int)(Database::fetchOne("
-            SELECT COUNT(*) as cnt FROM credit_logs cl
-            LEFT JOIN users u ON cl.user_id = u.id
-            {$where}
-        ", $params)['cnt'] ?? 0);
-        $offset = ($page - 1) * $limit;
-
-        $logs = Database::fetchAll("
-            SELECT cl.*, u.username, u.avatar FROM credit_logs cl
-            LEFT JOIN users u ON cl.user_id = u.id
-            {$where}
-            ORDER BY cl.created_at DESC
-            LIMIT ? OFFSET ?
-        ", array_merge($params, [$limit, $offset]));
-
-        $this->layuiJson($logs, $total);
+    /**
+     * 积分记录数据（页面与 JSON API 共用同一份查询逻辑）
+     *
+     * @return array{rows: array, total: int}
+     */
+    private function fetchCreditLogs(int $page, int $limit, string $search): array
+    {
+        return \App\Models\CreditLog::adminList($search, $page, $limit);
     }
 
     // ==================== 积分记录 ====================
@@ -702,6 +798,20 @@ class UserController extends AdminBase
     public function creditLogs(): void
     {
         $this->requireAdmin();
-        $this->render('admin/credit_logs', ['pageTitle' => '积分记录']);
+
+        $page   = max(1, (int)($_GET['page'] ?? 1));
+        $limit  = 20;
+        $search = trim($_GET['search'] ?? '');
+
+        $result = $this->fetchCreditLogs($page, $limit, $search);
+
+        $this->renderAdmin('admin/credit_logs', [
+            'pageTitle' => '积分记录',
+            'rows'      => $result['rows'],
+            'total'     => $result['total'],
+            'page'      => $page,
+            'pages'     => max(1, (int)ceil($result['total'] / $limit)),
+            'search'    => $search,
+        ], 'credit-logs');
     }
 }

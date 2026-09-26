@@ -5,7 +5,8 @@
 
 namespace App\Services;
 
-use Core\Database;
+use App\Models\IpAccessLog;
+use App\Models\Setting;
 use Core\Cache;
 
 class IpAccessSvc
@@ -44,11 +45,7 @@ class IpAccessSvc
 
         try {
             // 使用 INSERT ... ON DUPLICATE KEY UPDATE 原子操作
-            Database::execute(
-                "INSERT INTO ip_access_logs (ip, action, count, date, updated_at) VALUES (?, ?, 1, ?, ?)
-                 ON DUPLICATE KEY UPDATE count = count + 1, updated_at = VALUES(updated_at)",
-                [$ip, $action, $today, $now]
-            );
+            IpAccessLog::increment($ip, $action, $today, $now);
             // 清除缓存使下次 getCount 读取最新值
             Cache::delete("ipaccess:{$ip}:{$action}:{$today}");
         } catch (\Throwable $e) {
@@ -75,11 +72,7 @@ class IpAccessSvc
         // 从 DB 读取递增后的最新值（increment 已清除缓存）
         $today = date('Y-m-d');
         try {
-            $row = Database::fetchOne(
-                "SELECT count FROM ip_access_logs WHERE ip = ? AND action = ? AND date = ?",
-                [$ip, $action, $today]
-            );
-            $count = (int)($row['count'] ?? 0);
+            $count = IpAccessLog::countFor($ip, $action, $today);
         } catch (\Throwable $e) {
             error_log('[IpAccessSvc] checkAndIncrement query failed: ' . $e->getMessage());
             return;
@@ -108,11 +101,7 @@ class IpAccessSvc
         if ($cached !== null) return (int)$cached;
 
         try {
-            $row = Database::fetchOne(
-                "SELECT count FROM ip_access_logs WHERE ip = ? AND action = ? AND date = ?",
-                [$ip, $action, $today]
-            );
-            $count = (int)($row['count'] ?? 0);
+            $count = IpAccessLog::countFor($ip, $action, $today);
             Cache::set($cacheKey, $count, 60);
             return $count;
         } catch (\Throwable $e) {
@@ -126,18 +115,12 @@ class IpAccessSvc
     private static function getLimits(): array
     {
         return Cache::get('settings:ip_limits', function () {
-            $limits = [];
             try {
-                $rows = Database::fetchAll(
-                    "SELECT `key`, `value` FROM settings WHERE `key` LIKE 'ip_limit_%'"
-                );
-                foreach ($rows as $row) {
-                    $limits[$row['key']] = $row['value'];
-                }
+                return Setting::allWithPrefix('ip_limit_');
             } catch (\Throwable $e) {
                 error_log('[IpAccessSvc] loadLimits failed: ' . $e->getMessage());
+                return [];
             }
-            return $limits;
         }, 300);
     }
 
@@ -148,7 +131,7 @@ class IpAccessSvc
     {
         try {
             $cutoff = date('Y-m-d', strtotime("-{$keepDays} days"));
-            return Database::execute("DELETE FROM ip_access_logs WHERE date < ?", [$cutoff]);
+            return IpAccessLog::pruneBefore($cutoff);
         } catch (\Throwable $e) {
             return 0;
         }

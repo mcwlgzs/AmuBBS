@@ -9,6 +9,21 @@ namespace Core;
 class Helper
 {
     /**
+     * 关键词是否包含中日韩文字（CJK）
+     *
+     * InnoDB 的 FULLTEXT 默认分词器对 CJK 支持很差：一段中文常常只被切成极少 token，
+     * 导致 MATCH...AGAINST 只命中一部分结果、甚至 0 条，而且【不抛异常】，属于静默失真。
+     * 因此中文关键词应当直接走 LIKE，跳过 FULLTEXT。
+     */
+    public static function containsCjk(string $text): bool
+    {
+        return (bool)preg_match(
+            '/[\x{3400}-\x{4DBF}\x{4E00}-\x{9FFF}\x{F900}-\x{FAFF}\x{3040}-\x{30FF}\x{AC00}-\x{D7AF}]/u',
+            $text
+        );
+    }
+
+    /**
      * 人性化时间显示（参考 Xiuno 的 humandate）
      * 将时间戳转为"刚刚"、"5分钟前"、"3小时前"、"昨天 14:30"等
      */
@@ -120,14 +135,15 @@ class Helper
     /**
      * 判断 IP 是否为可信代理
      * 支持精确 IP 和 CIDR 匹配
+     *
+     * 注意：**不**再把 127.0.0.1/::1 无条件当作可信代理。
+     * 常见部署形态是「本机 nginx 反代 → php-fpm」，此时 REMOTE_ADDR 恒为回环地址，
+     * 无条件信任回环等于让任何访客都能用 X-Forwarded-For 伪造自己的 IP，
+     * 从而绕过限流、登录锁定与 admin_bind_ip。
+     * 必须由 SettingSvc 的 trusted_proxies 显式声明代理地址（如 "127.0.0.1,10.0.0.0/8"）。
      */
     private static function isTrustedProxy(string $ip): bool
     {
-        // 本地回环始终可信
-        if ($ip === '127.0.0.1' || $ip === '::1') {
-            return true;
-        }
-
         // 从配置读取可信代理列表（缓存在静态变量中避免重复解析）
         static $proxies = null;
         if ($proxies === null) {
@@ -221,5 +237,23 @@ class Helper
             return $str;
         }
         return mb_substr($str, 0, $length) . $suffix;
+    }
+
+    /**
+     * 静态资源 URL，附带文件修改时间做版本号
+     *
+     * 为什么要这个：开发用的 php -S（以及不少共享主机）不给 .css/.js 发
+     * Cache-Control / ETag，浏览器就按启发式规则自己缓存；iframe 里的子页面
+     * 更是换页也不会重新拉样式。挂上 filemtime 之后文件一变 URL 就变，
+     * 「改了样式但页面还是旧的」这类问题从根上消失。
+     *
+     * @param string $path 以 / 开头的 public 路径，例如 /assets/css/admin-layui.css
+     */
+    public static function asset(string $path): string
+    {
+        $file = APP_PATH . 'public' . $path;
+        $ver  = is_file($file) ? filemtime($file) : 0;
+
+        return $path . ($ver ? '?v=' . $ver : '');
     }
 }

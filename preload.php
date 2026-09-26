@@ -21,17 +21,26 @@ $coreFiles = [
     'core/Router.php',
     'core/Database.php',
     'core/Cache.php',
+    'core/Cache/FileStore.php',
     'core/PageCache.php',
     'core/Security.php',
     'core/Lang.php',
     'core/Url.php',
     'core/Helper.php',
+    'core/Env.php',
     'core/Container.php',
     'core/EventDispatcher.php',
     'core/Event.php',
+    'core/hooks.php',
     'core/RememberToken.php',
+    'core/AdminToken.php',
+    'core/AppKey.php',
     'core/RedisSessionHandler.php',
     'core/Markdown.php',
+    'core/HtmlSanitizer.php',
+    'core/Mailer.php',
+    'core/Queue.php',
+    'core/PluginInterface.php',
     'core/PluginManager.php',
     'core/PluginLoader.php',
 ];
@@ -59,14 +68,6 @@ $serviceFiles = [
     'app/Services/IpBlacklistService.php',
 ];
 
-// 高频 Repository
-$repoFiles = [
-    'app/Repositories/ThreadRepo.php',
-    'app/Repositories/PostRepo.php',
-    'app/Repositories/ForumRepo.php',
-    'app/Repositories/UserRepo.php',
-];
-
 // 中间件
 $middlewareFiles = [
     'app/Middlewares/Auth.php',
@@ -76,18 +77,26 @@ $middlewareFiles = [
     'app/Middlewares/RunLevel.php',
 ];
 
-$allFiles = array_merge($coreFiles, $controllerFiles, $serviceFiles, $repoFiles, $middlewareFiles);
+// 注意：不存在 app/Repositories 目录（早已把 Repository 层合并进 app/Models），
+// 这里不要再列不存在的文件——file_exists 静默跳过会让「声明 N 个」与实际不符。
+$allFiles = array_merge($coreFiles, $controllerFiles, $serviceFiles, $middlewareFiles);
 
 $loaded = 0;
+$missing = [];
 foreach ($allFiles as $file) {
     $fullPath = $basePath . $file;
     if (file_exists($fullPath)) {
         opcache_compile_file($fullPath);
         $loaded++;
+    } else {
+        $missing[] = $file;
     }
 }
 
 // 记录预加载结果（仅在 CLI 下输出）
 if (PHP_SAPI === 'cli') {
     echo "OPcache preloaded {$loaded}/" . count($allFiles) . " files\n";
+    if ($missing) {
+        echo 'missing: ' . implode(', ', $missing) . "\n";
+    }
 }

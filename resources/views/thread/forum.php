@@ -27,7 +27,7 @@ include APP_PATH . 'resources/views/layout/header.php';
         $_isAdmin = isset($_SESSION['group_id']) && (int)$_SESSION['group_id'] >= 3;
     }
 ?>
-<div <?php if ($_isAdmin): ?>x-data="modManager()"<?php endif; ?>>
+<div>
 <div class="card forum-header">
     <div class="forum-header-top">
         <div class="forum-header-icon"><?= htmlspecialchars(mb_substr($forum['name'] ?? '', 0, 1)) ?></div>
@@ -57,7 +57,7 @@ include APP_PATH . 'resources/views/layout/header.php';
         <div class="forum-stat-item forum-stat-mods">
             <span class="mod-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg></span>
             <div style="display:flex;flex-direction:column;gap:2px;">
-                <span class="forum-stat-label">版主<?php if ($_isAdmin): ?> <span style="cursor:pointer;opacity:.7;font-size:10px;" @click.stop="showPanel = !showPanel" title="管理版主">✎</span><?php endif; ?></span>
+                <span class="forum-stat-label">版主<?php if ($_isAdmin): ?> <button type="button" data-toggle-target="#forumModPanel" title="管理版主" style="cursor:pointer;opacity:.7;font-size:10px;background:none;border:none;padding:0;color:inherit;">✎</button><?php endif; ?></span>
                 <?php if (!empty($_modList)): ?>
                 <div style="display:flex;align-items:center;">
                     <?php foreach ($_modList as $i => $m): ?>
@@ -75,33 +75,21 @@ include APP_PATH . 'resources/views/layout/header.php';
     <?php endif; ?>
 </div>
 <?php if ($_isAdmin): ?>
-<!-- 版主管理弹窗 -->
-<div x-show="showPanel" x-cloak x-transition.opacity style="position:fixed;inset:0;z-index:999;background:rgba(0,0,0,.4);" @click.self="showPanel=false">
-    <div style="position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);background:var(--bg-card,#fff);border-radius:12px;padding:20px;width:90%;max-width:360px;box-shadow:0 8px 32px rgba(0,0,0,.18);z-index:1000;" @click.stop>
+<!-- 版主管理弹窗（显隐由 [data-toggle-target] 打开、[data-overlay-close] 点遮罩关闭） -->
+<div id="forumModPanel" hidden data-overlay-close style="position:fixed;inset:0;z-index:999;background:rgba(0,0,0,.4);">
+    <div style="position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);background:var(--bg-card,#fff);border-radius:12px;padding:20px;width:90%;max-width:360px;box-shadow:0 8px 32px rgba(0,0,0,.18);z-index:1000;">
         <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;">
             <div style="font-size:15px;font-weight:700;color:var(--text);">管理版主</div>
-            <button @click="showPanel=false" style="background:none;border:none;cursor:pointer;font-size:18px;color:var(--text-muted);line-height:1;">&times;</button>
+            <button type="button" data-toggle-target="#forumModPanel" style="background:none;border:none;cursor:pointer;font-size:18px;color:var(--text-muted);line-height:1;">&times;</button>
         </div>
-        <div style="margin-bottom:12px;">
-            <template x-for="m in mods" :key="m.id">
-                <div style="display:flex;align-items:center;justify-content:space-between;padding:6px 0;font-size:13px;color:var(--text);border-bottom:1px solid var(--border-light,#f1f5f9);">
-                    <a :href="'/user/' + m.id" style="display:inline-flex;align-items:center;gap:6px;text-decoration:none;color:var(--text);">
-                        <img :src="m.avatar || '/assets/images/default-avatar.png'" alt="" style="width:24px;height:24px;border-radius:50%;" loading="lazy">
-                        <span x-text="m.name"></span>
-                        <span style="color:var(--text-muted);font-size:11px;">#<span x-text="m.id"></span></span>
-                    </a>
-                    <button @click="removeMod(m.id)" style="background:none;border:none;cursor:pointer;color:var(--danger,#ef4444);padding:2px 6px;font-size:12px;border-radius:4px;" title="移除">
-                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:14px;height:14px;"><path d="M18 6L6 18M6 6l12 12"/></svg>
-                    </button>
-                </div>
-            </template>
-            <div x-show="mods.length === 0" style="font-size:12px;color:var(--text-muted);padding:8px 0;text-align:center;">暂无版主</div>
-        </div>
-        <div style="display:flex;gap:6px;">
-            <input type="text" x-model="newMod" @keydown.enter.prevent="addMod()" placeholder="用户名或ID" style="flex:1;padding:7px 10px;font-size:13px;border:1px solid var(--border);border-radius:6px;background:var(--bg-card,#fff);color:var(--text);">
-            <button @click="addMod()" :disabled="adding" style="padding:7px 14px;font-size:13px;background:var(--primary);color:#fff;border:none;border-radius:6px;cursor:pointer;white-space:nowrap;">添加</button>
-        </div>
-        <div x-show="modMsg" x-text="modMsg" style="font-size:12px;margin-top:6px;" :style="modErr ? 'color:var(--danger,#ef4444)' : 'color:var(--success,#22c55e)'"></div>
+        <?php $modList = $_modList; $forumId = (int)$forum['id']; include APP_PATH . 'resources/views/thread/_mod_list.php'; ?>
+        <form hx-post="/forum/moderators" hx-target="#forumModList" hx-swap="outerHTML"
+              hx-indicator="this" style="display:flex;gap:6px;">
+            <input type="hidden" name="action" value="add">
+            <input type="hidden" name="forum_id" value="<?= (int)$forum['id'] ?>">
+            <input type="text" name="username" placeholder="用户名或ID" required style="flex:1;padding:7px 10px;font-size:13px;border:1px solid var(--border);border-radius:6px;background:var(--bg-card,#fff);color:var(--text);">
+            <button type="submit" style="padding:7px 14px;font-size:13px;background:var(--primary);color:#fff;border:none;border-radius:6px;cursor:pointer;white-space:nowrap;">添加</button>
+        </form>
     </div>
 </div>
 <?php endif; ?>
@@ -146,15 +134,17 @@ include APP_PATH . 'resources/views/layout/header.php';
 <div class="home-layout">
     <div class="home-main">
         <!-- 帖子列表 -->
-        <div class="card" <?php if ($_isMod): ?>x-data="batchMod()"<?php endif; ?>>
+        <div class="card">
             <?php if ($_isMod && !empty($threads)): ?>
             <!-- 批量操作工具栏 -->
-            <div x-show="selected.length > 0" x-transition style="padding:10px 16px;background:var(--bg-secondary);border-bottom:1px solid var(--border);display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
-                <span style="font-size:13px;color:var(--text-secondary);">已选 <strong x-text="selected.length"></strong> 项</span>
-                <button class="btn btn-sm btn-primary" @click="exec('top')">置顶</button>
-                <button class="btn btn-sm btn-ghost" @click="exec('lock')">锁定</button>
-                <button class="btn btn-sm btn-ghost" @click="exec('unlock')">解锁</button>
-                <select x-model="moveTarget" style="font-size:12px;padding:4px 8px;border:1px solid var(--border);border-radius:var(--radius);">
+            <!-- 批量操作工具栏（版主）：勾选后才显示，计数/全选交给 app.js 的 [data-check-toolbar] -->
+            <div data-check-toolbar="[data-thread-check]" hidden
+                 style="padding:10px 16px;background:var(--bg-secondary);border-bottom:1px solid var(--border);align-items:center;gap:8px;flex-wrap:wrap;">
+                <span style="font-size:13px;color:var(--text-secondary);">已选 <strong data-check-count>0</strong> 项</span>
+                <button type="button" class="btn btn-sm btn-primary" hx-post="/mod/batch" hx-vals='{"action":"top"}' hx-include="[data-thread-check]:checked" hx-swap="none">置顶</button>
+                <button type="button" class="btn btn-sm btn-ghost" hx-post="/mod/batch" hx-vals='{"action":"lock"}' hx-include="[data-thread-check]:checked" hx-swap="none">锁定</button>
+                <button type="button" class="btn btn-sm btn-ghost" hx-post="/mod/batch" hx-vals='{"action":"unlock"}' hx-include="[data-thread-check]:checked" hx-swap="none">解锁</button>
+                <select id="modMoveTarget" name="target_forum_id" style="font-size:12px;padding:4px 8px;border:1px solid var(--border);border-radius:var(--radius);">
                     <option value="">移动到...</option>
                     <?php
                     $allForums = \Core\Database::fetchAllCached("SELECT id, name FROM forums WHERE deleted_at IS NULL ORDER BY `rank` DESC", [], 600);
@@ -162,10 +152,10 @@ include APP_PATH . 'resources/views/layout/header.php';
                     <option value="<?= (int)$af['id'] ?>"><?= htmlspecialchars($af['name']) ?></option>
                     <?php endforeach; ?>
                 </select>
-                <button class="btn btn-sm btn-ghost" @click="exec('move')" x-show="moveTarget">确认移动</button>
-                <button class="btn btn-sm" style="color:var(--danger);" @click="if(confirm('确定批量删除？'))exec('delete')">删除</button>
+                <button type="button" class="btn btn-sm btn-ghost" hx-post="/mod/batch" hx-vals='{"action":"move"}' hx-include="[data-thread-check]:checked, #modMoveTarget" hx-swap="none">确认移动</button>
+                <button type="button" class="btn btn-sm" style="color:var(--danger);" hx-post="/mod/batch" hx-vals='{"action":"delete"}' hx-include="[data-thread-check]:checked" hx-swap="none" hx-confirm="确定批量删除？">删除</button>
                 <label style="margin-left:auto;font-size:12px;cursor:pointer;color:var(--text-muted);">
-                    <input type="checkbox" @change="toggleAll($event.target.checked)" style="margin-right:4px;">全选
+                    <input type="checkbox" data-check-all style="margin-right:4px;">全选
                 </label>
             </div>
             <?php endif; ?>
@@ -176,14 +166,13 @@ include APP_PATH . 'resources/views/layout/header.php';
                 <?php foreach ($threads as $thread): ?>
                 <div class="thread-list-item <?= ($thread['is_top'] ?? false) ? 'is-top' : '' ?>">
                     <?php if ($_isMod): ?>
-                    <input type="checkbox" value="<?= (int)$thread['id'] ?>" @change="toggle(<?= (int)$thread['id'] ?>)" :checked="selected.includes(<?= (int)$thread['id'] ?>)" style="margin-right:8px;cursor:pointer;">
+                    <input type="checkbox" name="tids[]" value="<?= (int)$thread['id'] ?>" data-thread-check style="margin-right:8px;cursor:pointer;">
                     <?php endif; ?>
                     <img src="<?= htmlspecialchars($thread['avatar'] ?: '/assets/images/default-avatar.png') ?>" alt="" class="avatar-sm" loading="lazy">
                     <div class="thread-list-body">
                         <a href="/thread/<?= (int)$thread['id'] ?>" class="thread-list-title" data-tid="<?= (int)$thread['id'] ?>" data-lpt="<?= (int)($thread['last_post_time'] ?? $thread['created_at']) ?>">
                             <?= htmlspecialchars($thread['title']) ?>
-                            <?php if ($thread['is_top'] ?? false): ?><span class="tag tag-top" title="置顶"><svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M12 19V5M5 12l7-7 7 7"/></svg></span><?php endif; ?>
-                            <?php $_hl = (int)($thread['is_highlight'] ?? 0); if ($_hl > 0): ?><span class="tag tag-highlight" title="精华"><svg viewBox="0 0 24 24" width="12" height="12" fill="currentColor"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg></span><?php endif; ?>
+                            <?php $badgeThread = $thread; include APP_PATH . 'resources/views/components/thread-badges.php'; ?>
                             <?php if ($thread['is_locked'] ?? false): ?><span class="tag tag-locked" title="已锁定"><svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2.5"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg></span><?php endif; ?>
                         </a>
                         <div class="thread-list-info">
@@ -255,76 +244,6 @@ include APP_PATH . 'resources/views/layout/header.php';
     </div>
 </div>
 
-<?php if ($_isAdmin): ?>
-<script>
-function modManager() {
-    return {
-        showPanel: false, newMod: '', adding: false, modMsg: '', modErr: false,
-        mods: <?= json_encode($_modList, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG) ?>,
-        async addMod() {
-            if (!this.newMod.trim() || this.adding) return;
-            this.adding = true; this.modMsg = '';
-            try {
-                const d = await App.postJSON('/forum/moderators', { forum_id: <?= (int)$forum['id'] ?>, action: 'add', username: this.newMod.trim() });
-                if (d.success) {
-                    this.mods.push(d.data.user);
-                    this.newMod = '';
-                    this.modMsg = '已添加'; this.modErr = false;
-                } else {
-                    this.modMsg = d.message || '添加失败'; this.modErr = true;
-                }
-            } catch(e) { this.modMsg = '网络错误'; this.modErr = true; }
-            this.adding = false;
-            setTimeout(() => this.modMsg = '', 3000);
-        },
-        async removeMod(userId) {
-            if (!confirm('确定移除该版主？')) return;
-            try {
-                const d = await App.postJSON('/forum/moderators', { forum_id: <?= (int)$forum['id'] ?>, action: 'remove', user_id: userId });
-                if (d.success) {
-                    this.mods = this.mods.filter(m => m.id !== userId);
-                    this.modMsg = '已移除'; this.modErr = false;
-                } else {
-                    this.modMsg = d.message || '移除失败'; this.modErr = true;
-                }
-            } catch(e) { this.modMsg = '网络错误'; this.modErr = true; }
-            setTimeout(() => this.modMsg = '', 3000);
-        }
-    };
-}
-</script>
-<?php endif; ?>
 
-<?php if ($_isMod): ?>
-<script>
-function batchMod() {
-    return {
-        selected: [], moveTarget: '',
-        toggle(id) {
-            const i = this.selected.indexOf(id);
-            if (i >= 0) this.selected.splice(i, 1);
-            else this.selected.push(id);
-        },
-        toggleAll(checked) {
-            if (checked) {
-                this.selected = <?= json_encode(array_map(fn($t) => (int)$t['id'], $threads ?? [])) ?>;
-            } else {
-                this.selected = [];
-            }
-            document.querySelectorAll('.thread-list-item input[type=checkbox]').forEach(cb => cb.checked = checked);
-        },
-        async exec(action) {
-            const body = { action, tids: this.selected };
-            if (action === 'move') {
-                if (!this.moveTarget) return;
-                body.target_forum_id = parseInt(this.moveTarget);
-            }
-            const d = await App.postJSON('/mod/batch', body);
-            if (d.success) { setTimeout(() => location.reload(), 800); }
-        }
-    };
-}
-</script>
-<?php endif; ?>
 
 <?php include APP_PATH . 'resources/views/layout/footer.php'; ?>

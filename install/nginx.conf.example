@@ -1,0 +1,105 @@
+# AMuBBS — Nginx 配置示例
+#
+# 用法：
+#   1. 复制到 /etc/nginx/conf.d/amubbs.conf（或 sites-available/ 后做软链）
+#   2. 把 server_name、root、fastcgi_pass 三处改成你的实际值
+#   3. nginx -t && systemctl reload nginx
+#
+# 关键点（照抄别删）：
+#   - root 必须指向 public/，项目根的 .env / core/ / config/ 不能出现在 webroot 里
+#   - public/uploads/ 里禁止执行任何脚本（用户上传内容）
+#   - 静态资源在这里加缓存/压缩头（应用自身不发这些头）
+#   - 若要放在 nginx 之后（或之前）的反向代理后面，
+#     必须在「后台 → 系统设置 → 可信代理」里填反代 IP，
+#     否则应用不会信任 X-Forwarded-For / X-Forwarded-Proto。
+
+server {
+    listen       80;
+    server_name  bbs.example.com;
+
+    # ---- 1. 站点根目录：public/（不是项目根）----
+    root  /var/www/amubbs/public;
+    index index.php index.html;
+
+    # 上传体积上限：跟 config 里的上传上限保持一致（默认 20MB）
+    client_max_body_size 25m;
+
+    # ---- 2. 静态资源：由 nginx 直接发，并带上缓存/压缩头 ----
+    location ~* \.(css|js|png|jpe?g|gif|webp|svg|ico|woff2?|ttf|eot)$ {
+        expires 7d;
+        add_header Cache-Control "public";
+        add_header X-Content-Type-Options "nosniff";
+        access_log off;
+        try_files $uri =404;
+    }
+
+    gzip on;
+    gzip_comp_level 5;
+    gzip_min_length 1024;
+    gzip_proxied any;
+    gzip_types text/plain text/css text/xml application/javascript application/json
+               application/xml image/svg+xml application/rss+xml;
+
+    # ---- 3. 上传目录：禁止执行脚本（最重要的一条）----
+    # 上传目录里全是用户可控内容：即使应用做了白名单，
+    # 这里也必须再兜一层，避免伪装成图片的 .php 被解析。
+    location ^~ /uploads/ {
+        location ~ \.(php|phtml|php[0-9]|pht|phar|cgi|pl|py|sh|asp|aspx|jsp)$ {
+            return 403;
+        }
+        add_header X-Content-Type-Options "nosniff";
+        add_header Content-Security-Policy "default-src 'none'; img-src 'self' data:; media-src 'self'; style-src 'unsafe-inline'; sandbox";
+        add_header Cache-Control "public, max-age=2592000";
+        try_files $uri =404;
+    }
+
+    # ---- 4. 隐藏文件/敏感后缀兜底 ----
+    location ~ /\.(?!well-known) {
+        deny all;
+    }
+    location ~* \.(md|sql|lock|log|ini|bak|sh|yml|yaml|json)$ {
+        deny all;
+    }
+
+    # ---- 5. 前端控制器 ----
+    location / {
+        try_files $uri $uri/ /index.php?$query_string;
+    }
+
+    location = /index.php {
+        include        fastcgi_params;
+        fastcgi_param  SCRIPT_FILENAME $document_root/index.php;
+        fastcgi_param  SCRIPT_NAME     /index.php;
+        fastcgi_pass   unix:/run/php/php8.2-fpm.sock;   # 改成你的 php-fpm 地址
+        fastcgi_read_timeout 60s;
+        fastcgi_buffers 16 16k;
+        fastcgi_buffer_size 32k;
+        # 反代场景下让应用知道原始协议/来源
+        fastcgi_param  HTTPS $https if_not_empty;
+    }
+
+    # 只允许 index.php 被当作 PHP 执行（顺手挡掉「理论上不该存在」的其它 php）
+    location ~ \.php$ {
+        return 404;
+    }
+
+    # ---- 6. 安全响应头（应用自己也会发，这里再兜一层便于无 PHP 的静态路径）----
+    add_header X-Content-Type-Options "nosniff" always;
+    add_header X-Frame-Options "SAMEORIGIN" always;
+    add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+
+    # ---- 7. 日志 ----
+    access_log /var/log/nginx/amubbs.access.log;
+    error_log  /var/log/nginx/amubbs.error.log;
+}
+
+# HTTPS 版（用 certbot 可以自动生成，这里给出关键差异）
+#
+# server {
+#     listen 443 ssl http2;
+#     server_name bbs.example.com;
+#     ssl_certificate     /etc/letsencrypt/live/bbs.example.com/fullchain.pem;
+#     ssl_certificate_key /etc/letsencrypt/live/bbs.example.com/privkey.pem;
+#     add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
+#     ... 其余同上 ...
+# }

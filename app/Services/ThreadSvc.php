@@ -5,8 +5,13 @@
 
 namespace App\Services;
 
-use App\Repositories\ThreadRepo;
-use App\Repositories\PostRepo;
+use App\Models\Thread;
+use App\Models\Post;
+use App\Models\PostEditLog;
+use App\Models\PostLike;
+use App\Models\Forum;
+use App\Models\User;
+use App\Models\Notification;
 use App\Events\Events;
 use Core\Cache;
 use Core\Database;
@@ -14,8 +19,6 @@ use Core\Event;
 
 class ThreadSvc
 {
-    private ThreadRepo $threadRepo;
-    private PostRepo $postRepo;
     private ForumSvc $forumService;
     private UserSvc $userService;
 
@@ -25,8 +28,6 @@ class ThreadSvc
 
     public function __construct()
     {
-        $this->threadRepo = new ThreadRepo();
-        $this->postRepo = new PostRepo();
         $this->forumService = new ForumSvc();
         $this->userService = new UserSvc();
     }
@@ -35,6 +36,11 @@ class ThreadSvc
      * 缓存的最大页数
      */
     private const CACHE_LIST_PAGES = 5;
+
+    /**
+     * 首页/全部帖子页列表缓存的最大页数（与 clearLatestCache() 的 50 页保持一致）
+     */
+    private const CACHE_THREAD_LIST_PAGES = 50;
 
     /**
      * 清除板块帖子列表缓存
@@ -56,44 +62,8 @@ class ThreadSvc
      */
     public static function clearPostCache(int $threadId): void
     {
-        // 使用 Redis SCAN 清除所有相关缓存
-        $redis = Cache::getRedis();
-        if ($redis !== null) {
-            try {
-                // 清除所有页面的缓存
-                $patterns = [
-                    "posts:thread:{$threadId}:asc:*",
-                    "posts:thread:{$threadId}:desc:*",
-                    "posts:count:{$threadId}",
-                ];
-                
-                foreach ($patterns as $pattern) {
-                    $iterator = null;
-                    while ($keys = $redis->scan($iterator, $pattern, 100)) {
-                        if (!empty($keys)) {
-                            $redis->del($keys);
-                        }
-                        if ($iterator === 0) break;
-                    }
-                }
-            } catch (\Exception $e) {
-                error_log('[ThreadSvc] 清除缓存失败: ' . $e->getMessage());
-                // 降级：清除前 10 页缓存
-                foreach (['asc', 'desc'] as $order) {
-                    for ($p = 1; $p <= 10; $p++) {
-                        Cache::delete("posts:thread:{$threadId}:{$order}:p{$p}");
-                    }
-                }
-            }
-        } else {
-            // 无 Redis 时清除前 10 页缓存
-            foreach (['asc', 'desc'] as $order) {
-                for ($p = 1; $p <= 10; $p++) {
-                    Cache::delete("posts:thread:{$threadId}:{$order}:p{$p}");
-                }
-            }
-        }
-        Cache::delete("posts:count:{$threadId}");
+        // 具体清哪些键由模型负责（回复增删改都该走同一套），这里只保留旧名字给历史调用方
+        Post::forgetCaches($threadId);
     }
 
     /**
@@ -117,7 +87,7 @@ class ThreadSvc
             $forum = $this->forumService->getForum($forumId);
             $total = $forum ? (int)($forum['thread_count'] ?? 0) : 0;
         } else {
-            $total = $this->threadRepo->countByForum($forumId, $filter);
+            $total = Thread::countByForum($forumId, $filter);
         }
         $totalPages = max(1, (int) ceil($total / $perPage));
 
@@ -133,7 +103,7 @@ class ThreadSvc
         }
 
         $offset = ($actualPage - 1) * $perPage;
-        $threads = $this->threadRepo->getByForum($forumId, $perPage, $offset, $orderBy, $reversed, $filter);
+        $threads = Thread::getByForum($forumId, $perPage, $offset, $orderBy, $reversed, $filter);
 
         // 反向查询后翻转结果，恢复正常展示顺序
         if ($reversed) {
@@ -143,7 +113,7 @@ class ThreadSvc
         // 第一页合并全局置顶帖（排除当前板块已有的，带缓存）
         if ($page === 1) {
             $globalTops = Cache::get('threads:global_tops_forum', function() {
-                return $this->threadRepo->getGlobalTopThreads();
+                return Thread::getGlobalTopThreads();
             }, 120);
             $existingIds = array_column($threads, 'id');
             $merged = [];
@@ -179,7 +149,7 @@ class ThreadSvc
         }
 
         $detail = Cache::get("thread:{$threadId}", function() use ($threadId) {
-            return $this->threadRepo->getDetail($threadId);
+            return Thread::getDetail($threadId);
         }, 300);
 
         if ($detail) {
@@ -213,8 +183,8 @@ class ThreadSvc
         $page = max(1, $page);
         $offset = ($page - 1) * $perPage;
 
-        $posts = $this->postRepo->getByThread($threadId, $perPage, $offset, $order, $authorOnly);
-        $total = $this->postRepo->countByThread($threadId, $authorOnly);
+        $posts = Post::getByThread($threadId, $perPage, $offset, $order, $authorOnly);
+        $total = Post::countByThread($threadId, $authorOnly);
         $totalPages = max(1, (int) ceil($total / $perPage));
 
         return [
@@ -226,35 +196,63 @@ class ThreadSvc
     }
 
     /**
-     * 增加浏览量（使用Redis原子操作优化）
-     * 先累积到Redis计数器，每10次或缓存过期时批量写入数据库
+     * 增加浏览量（缓存驱动无关的原子操作）
+     *
+     * 计数策略：请求内只做原子累加，跨过 10 的整数倍时落库 10 条，
+     * 剩余零头交给 cron 的 flushPendingViews() 用 `pending % 10` 补齐。
      */
     public function incrementViews(int $threadId): void
     {
         $cacheKey = "views:pending:{$threadId}";
 
-        $redis = Cache::getRedis();
-        if ($redis) {
-            try {
-                // 使用Redis INCR原子递增，避免竞态条件
-                $count = $redis->incr($cacheKey);
-                if ($count === 1) {
-                    $redis->expire($cacheKey, 300);
-                }
-                // 累积到10次时批量写入数据库
-                if ($count >= 10) {
-                    $this->threadRepo->incrementViews($threadId, $count);
-                    $redis->del($cacheKey);
-                }
-                return;
-            } catch (\Throwable $e) {
-                error_log('[ThreadSvc] Redis INCR 失败: ' . $e->getMessage());
-                // 降级到直接写 DB
+        // 驱动无关的原子递增：Redis 走 INCR，文件驱动走 flock
+        // TTL 由 300s 提到 3600s：原来低流量帖子在 300s 内不足 10 次浏览时，
+        // 计数会随 key 过期整批消失，现在给 cron 留出足够长的窗口。
+        try {
+            $count = Cache::increment($cacheKey, 1, 3600);
+
+            // 只在「刚凑齐一组 10」时落库。
+            // 原来的写法是 `if ($count >= 10) { 写 $count; delete; }`：
+            // 并发下第 10、11 个请求都会看到 >=10 并各自落库，11 次浏览可能写成 +21。
+            // 现在每个请求只写自己刚凑齐的那 10 条，且不删除计数器（零头由 cron 补）。
+            if ($count > 0 && $count % 10 === 0) {
+                Thread::incrementViews($threadId, 10);
             }
+
+            // 登记「有待写浏览量」的帖子 ID，让 cron 也能覆盖那些最近没有回帖、
+            // 不在 idsUpdatedSince() 结果里的老帖（只在计数器刚创建时登记一次）
+            if ($count === 1) {
+                $this->markPendingViews($threadId);
+            }
+
+            return;
+        } catch (\Throwable $e) {
+            error_log('[ThreadSvc] 浏览量累加失败，降级直写数据库: ' . $e->getMessage());
         }
 
-        // 降级：Redis 不可用时直接写数据库（使用数据库原子递增）
-        $this->threadRepo->incrementViews($threadId, 1);
+        // 降级：直接写数据库
+        Thread::incrementViews($threadId, 1);
+    }
+
+    /** 待写浏览量的帖子 ID 清单（cron 用它覆盖老帖，避免只依赖 idsUpdatedSince） */
+    public const PENDING_VIEW_IDS_KEY = 'views:pending_ids';
+
+    private function markPendingViews(int $threadId): void
+    {
+        $ids = Cache::get(self::PENDING_VIEW_IDS_KEY);
+        $ids = is_array($ids) ? $ids : [];
+
+        if (in_array($threadId, $ids, true)) {
+            return;
+        }
+
+        // 有界队列：只保留最近 1000 个待写帖子
+        if (count($ids) >= 1000) {
+            array_shift($ids);
+        }
+
+        $ids[] = $threadId;
+        Cache::set(self::PENDING_VIEW_IDS_KEY, $ids, 86400);
     }
 
     /**
@@ -263,12 +261,12 @@ class ThreadSvc
     public function getLatestThreads(int $limit = 10): array
     {
         return Cache::get("threads:latest:{$limit}", function () use ($limit) {
-            return $this->threadRepo->getLatest($limit);
+            return Thread::getLatest($limit);
         }, 300);
     }
 
     /**
-     * 确定性清除最新帖子缓存（替代 deletePattern SCAN）
+     * 清除最新帖子缓存（替代 deletePattern SCAN）
      */
     public static function clearLatestCache(): void
     {
@@ -276,6 +274,42 @@ class ThreadSvc
         for ($i = 1; $i <= 50; $i++) {
             $keys[] = "threads:latest:p{$i}";
         }
+        Cache::deleteMulti($keys);
+    }
+
+    /**
+     * 清理首页 / 全部帖子页的三大列表缓存
+     *
+     * 这些 key 全是确定性的（threads:latest|hot|featured:pN、allthreads:{sort}:pN 与总数），
+     * 以前这里用 deletePattern('threads:*') + deletePattern('allthreads:*')：
+     * 文件驱动下 deletePattern 要递归扫整个缓存目录并逐个文件读 key 再正则匹配，
+     * 代价随缓存文件数线性增长（1 万文件 ≈ 2 万次 syscall），而置顶是常用管理动作。
+     * 现在点名删除；超过 CACHE_THREAD_LIST_PAGES 的深分页交给 SWR 的 TTL 自然过期。
+     */
+    public static function clearThreadListCache(): void
+    {
+        $keys = [
+            'threads:latest:10',
+            'threads:total_count',
+            'threads:featured:count',
+            'threads:global_tops',
+            'threads:global_tops_forum',
+            'threads:hot_weekly',
+        ];
+
+        for ($i = 1; $i <= self::CACHE_THREAD_LIST_PAGES; $i++) {
+            $keys[] = "threads:latest:p{$i}";
+            $keys[] = "threads:hot:p{$i}";
+            $keys[] = "threads:featured:p{$i}";
+        }
+
+        foreach (['latest', 'hot', 'highlight'] as $sort) {
+            $keys[] = "allthreads:count:{$sort}";
+            for ($i = 1; $i <= self::CACHE_THREAD_LIST_PAGES; $i++) {
+                $keys[] = "allthreads:{$sort}:p{$i}";
+            }
+        }
+
         Cache::deleteMulti($keys);
     }
 
@@ -305,6 +339,10 @@ class ThreadSvc
         }
         $content = $contentFilter['text'];
 
+        // 插件过滤器：允许插件改写标题 / 内容（加前缀、二次审核、免责声明等）
+        $title   = apply_filters('thread.title', $title, $forumId);
+        $content = apply_filters('post.content', $content, $forumId);
+
         // 验证板块存在
         $forum = $this->forumService->getForum($forumId);
         if (!$forum) {
@@ -315,7 +353,7 @@ class ThreadSvc
 
         try {
             // 创建帖子
-            $threadId = $this->threadRepo->create($forumId, $userId, $username, $title, $content);
+            $threadId = Thread::create($forumId, $userId, $username, $title, $content);
 
             // 更新板块和用户统计
             $this->forumService->onThreadCreated($forumId, $threadId);
@@ -380,7 +418,7 @@ class ThreadSvc
         $content = $contentFilter['text'];
 
         // 验证帖子存在
-        $thread = $this->threadRepo->findById($threadId);
+        $thread = Thread::findById($threadId);
         if (!$thread) {
             throw new \RuntimeException('帖子不存在');
         }
@@ -394,10 +432,10 @@ class ThreadSvc
 
         try {
             // 创建回复
-            $postId = $this->postRepo->create($threadId, $userId, $username, $content, $quotePostId);
+            $postId = Post::create($threadId, $userId, $username, $content, $quotePostId);
 
             // 更新帖子、板块、用户统计
-            $this->threadRepo->updateLastPost($threadId, $userId);
+            Thread::updateLastPost($threadId, $userId);
             $this->forumService->onPostCreated($thread['forum_id']);
             $this->userService->incrementPostCount($userId);
 
@@ -414,7 +452,7 @@ class ThreadSvc
 
         // 通知帖子作者（不通知自己）
         if ((int)$thread['user_id'] !== $userId) {
-            NotificationSvc::notify(
+            Notification::notify(
                 (int)$thread['user_id'],
                 $userId,
                 'reply',
@@ -433,6 +471,7 @@ class ThreadSvc
 
         // 清除缓存
         Cache::delete("thread:{$threadId}");
+        \App\Models\Thread::forgetRowCachesFor([$threadId]);
         self::clearPostCache($threadId);
         self::clearLatestCache();
         self::clearForumCache((int)$thread['forum_id']);
@@ -468,15 +507,11 @@ class ThreadSvc
             if (empty($mentioned)) return;
 
             // 批量查询所有被 @ 的用户，避免 N+1
-            $placeholders = implode(',', array_fill(0, count($mentioned), '?'));
-            $users = Database::fetchAll(
-                "SELECT id, username FROM users WHERE username IN ({$placeholders}) AND deleted_at IS NULL",
-                array_values($mentioned)
-            );
+            $users = User::idsByUsernames(array_values($mentioned));
 
             foreach ($users as $user) {
                 if ((int)$user['id'] !== $fromUserId) {
-                    NotificationSvc::notify(
+                    Notification::notify(
                         (int)$user['id'],
                         $fromUserId,
                         'mention',
@@ -496,34 +531,11 @@ class ThreadSvc
     private function checkFloodControl(int $userId, string $type): void
     {
         $key = "flood:{$type}:{$userId}";
-        $redis = Cache::getRedis();
-        
-        if ($redis !== null) {
-            try {
-                // 使用 SET NX EX 原子操作：只有当 key 不存在时才设置，并返回成功
-                $result = $redis->set($key, time(), ['NX', 'EX' => 30]);
-                
-                if ($result === false) {
-                    // key 已存在，说明在防灌水时间窗口内
-                    throw new \RuntimeException('操作过于频繁，请稍后再试');
-                }
-                // 成功设置，允许操作
-                return;
-            } catch (\RuntimeException $e) {
-                throw $e;
-            } catch (\Exception $e) {
-                error_log('[ThreadSvc] Redis 防灌水检查失败: ' . $e->getMessage());
-                // Redis 失败时降级到普通检查
-            }
-        }
-        
-        // 降级方案：使用普通缓存（存在竞态条件，但总比没有好）
-        $last = Cache::get($key);
-        if ($last !== null) {
+        // 驱动无关的原子 SET NX：Redis 走 SET NX EX，文件驱动走 'x' 创建模式
+        // 抢到标记 = 放行；抢不到说明仍在 30 秒防灌水窗口内
+        if (!Cache::add($key, time(), 30)) {
             throw new \RuntimeException('操作过于频繁，请稍后再试');
         }
-        // 立即设置标记
-        Cache::set($key, time(), 30);
     }
 
     /**
@@ -544,7 +556,7 @@ class ThreadSvc
      */
     public function updateThread(int $threadId, int $userId, int $groupId, string $title, string $content): void
     {
-        $thread = $this->threadRepo->findById($threadId);
+        $thread = Thread::findById($threadId);
         if (!$thread) {
             throw new \RuntimeException('帖子不存在');
         }
@@ -568,10 +580,11 @@ class ThreadSvc
         $content = $contentFilter['text'];
 
         // 记录编辑历史
-        PostEditLogSvc::log($threadId, 0, $userId, $thread['content'], $content);
+        PostEditLog::log($threadId, 0, $userId, $thread['content'], $content);
 
-        $this->threadRepo->update($threadId, $title, $content);
+        Thread::update($threadId, $title, $content);
         Cache::delete("thread:{$threadId}");
+        \App\Models\Thread::forgetRowCachesFor([$threadId]);
         self::clearLatestCache();
         self::clearForumCache((int)$thread['forum_id']);
         self::clearEntityCache($threadId);
@@ -584,7 +597,7 @@ class ThreadSvc
      */
     public function deleteThread(int $threadId, int $userId, int $groupId): void
     {
-        $thread = $this->threadRepo->findById($threadId);
+        $thread = Thread::findById($threadId);
         if (!$thread) {
             throw new \RuntimeException('帖子不存在');
         }
@@ -602,40 +615,26 @@ class ThreadSvc
 
         try {
             // 使用 FOR UPDATE 锁定帖子记录，防止并发删除导致的死锁
-            $lockedThread = Database::fetchOne(
-                "SELECT id FROM threads WHERE id = ? AND deleted_at IS NULL FOR UPDATE",
-                [$threadId]
-            );
-            if (!$lockedThread) {
+            if (!Thread::lockForDelete($threadId)) {
                 throw new \RuntimeException('帖子不存在或已被删除');
             }
 
-            $this->threadRepo->softDelete($threadId);
+            Thread::softDelete($threadId);
 
             // 级联软删除子回复，并扣减每个回复作者的 post_count
             // 使用 FOR UPDATE 锁定回复记录，防止并发修改
-            $replies = Database::fetchAll(
-                "SELECT user_id FROM posts WHERE thread_id = ? AND deleted_at IS NULL FOR UPDATE",
-                [$threadId]
-            );
-            if (!empty($replies)) {
-                Database::execute(
-                    "UPDATE posts SET deleted_at = ? WHERE thread_id = ? AND deleted_at IS NULL",
-                    [time(), $threadId]
-                );
+            $replyAuthors = Post::lockAuthorIdsInThread($threadId);
+            if (!empty($replyAuthors)) {
+                Post::softDeleteByThread($threadId, time());
                 $authorCounts = [];
-                foreach ($replies as $r) {
-                    $aid = (int)$r['user_id'];
+                foreach ($replyAuthors as $aid) {
                     $authorCounts[$aid] = ($authorCounts[$aid] ?? 0) + 1;
                 }
                 // 批量锁定用户记录，按ID排序避免死锁
                 $userIds = array_keys($authorCounts);
                 sort($userIds);
                 foreach ($userIds as $uid) {
-                    Database::execute(
-                        "UPDATE users SET post_count = CASE WHEN post_count >= ? THEN post_count - ? ELSE 0 END WHERE id = ?",
-                        [$authorCounts[$uid], $authorCounts[$uid], $uid]
-                    );
+                    User::adjustPostCount($uid, -$authorCounts[$uid]);
                 }
             }
 
@@ -659,6 +658,7 @@ class ThreadSvc
         }
 
         Cache::delete("thread:{$threadId}");
+        \App\Models\Thread::forgetRowCachesFor([$threadId]);
         self::clearLatestCache();
         self::clearForumCache($forumId);
         self::clearEntityCache($threadId);
@@ -691,14 +691,15 @@ class ThreadSvc
 
         $level = max(0, min(2, $level));
 
-        $thread = $this->threadRepo->findById($threadId);
+        $thread = Thread::findById($threadId);
         if (!$thread) {
             throw new \RuntimeException('帖子不存在');
         }
 
         $oldLevel = (int)($thread['is_top'] ?? 0);
-        $this->threadRepo->setTopLevel($threadId, $level);
+        Thread::setTopLevel($threadId, $level);
         Cache::delete("thread:{$threadId}");
+        \App\Models\Thread::forgetRowCachesFor([$threadId]);
 
         $labels = [0 => '普通', 1 => '板块置顶', 2 => '全局置顶'];
         LogService::log('mod_top', 'thread', $threadId, [
@@ -715,39 +716,13 @@ class ThreadSvc
      */
     public function toggleLike(int $threadId, int $userId): array
     {
-        $thread = $this->threadRepo->findById($threadId);
+        $thread = Thread::findById($threadId);
         if (!$thread) {
             throw new \RuntimeException('帖子不存在');
         }
 
-        Database::beginTransaction();
-
-        try {
-            $existing = Database::fetchOne(
-                "SELECT id FROM post_likes WHERE user_id = ? AND thread_id = ? FOR UPDATE",
-                [$userId, $threadId]
-            );
-
-            if ($existing) {
-                Database::execute("DELETE FROM post_likes WHERE id = ?", [$existing['id']]);
-                Database::execute("UPDATE threads SET likes = CASE WHEN likes > 0 THEN likes - 1 ELSE 0 END WHERE id = ?", [$threadId]);
-                $liked = false;
-            } else {
-                Database::execute(
-                    "INSERT INTO post_likes (user_id, thread_id, created_at) VALUES (?, ?, ?)",
-                    [$userId, $threadId, time()]
-                );
-                Database::execute("UPDATE threads SET likes = likes + 1 WHERE id = ?", [$threadId]);
-                $liked = true;
-            }
-
-            Database::commit();
-        } catch (\Throwable $e) {
-            Database::rollBack();
-            throw $e;
-        }
-
-        Cache::delete("user:liked:{$userId}:{$threadId}");
+        // post_likes 的增删与 threads.likes 计数由模型一起负责（含缓存失效）
+        $liked = PostLike::toggle($userId, $threadId);
 
         // 积分变动放在事务外，通过 CreditSvc 记录日志
         if ((int)$thread['user_id'] !== $userId) {
@@ -759,11 +734,11 @@ class ThreadSvc
             }
         }
 
-        $updated = Database::fetchOne("SELECT likes FROM threads WHERE id = ?", [$threadId]);
+        $updatedLikes = Thread::getLikes($threadId);
 
         return [
             'liked' => $liked,
-            'likes' => (int)($updated['likes'] ?? 0),
+            'likes' => $updatedLikes,
         ];
     }
 
@@ -778,14 +753,15 @@ class ThreadSvc
             throw new \RuntimeException('没有加精权限');
         }
 
-        $thread = $this->threadRepo->findById($threadId);
+        $thread = Thread::findById($threadId);
         if (!$thread) {
             throw new \RuntimeException('帖子不存在');
         }
 
         $level = max(0, min(3, $level));
-        $this->threadRepo->setDigest($threadId, $level);
+        Thread::setDigest($threadId, $level);
         Cache::delete("thread:{$threadId}");
+        \App\Models\Thread::forgetRowCachesFor([$threadId]);
         self::clearForumCache((int)$thread['forum_id']);
 
         if ($userId > 0) {
@@ -805,7 +781,7 @@ class ThreadSvc
      */
     public function toggleLock(int $threadId, int $userId): bool
     {
-        $thread = $this->threadRepo->findById($threadId);
+        $thread = Thread::findById($threadId);
         if (!$thread) {
             throw new \RuntimeException('帖子不存在');
         }
@@ -816,7 +792,8 @@ class ThreadSvc
         }
 
         $newState = !($thread['is_locked'] ?? false);
-        Database::execute("UPDATE threads SET is_locked = ?, updated_at = ? WHERE id = ?", [(int)$newState, time(), $threadId]);
+        // 写库与缓存失效都交给模型，避免这里漏掉行缓存（会导致短时间内解锁无效）
+        Thread::setLocked($threadId, $newState);
         Cache::delete("thread:{$threadId}");
 
         // 记录版主操作日志
@@ -828,6 +805,14 @@ class ThreadSvc
             $userId
         );
 
+        // 插件钩子：版主锁定/解锁（只有管理员或版主能走到这里）
+        Event::dispatch(Events::MOD_THREAD_LOCKED, [
+            'thread_id' => $threadId,
+            'forum_id'  => (int)$thread['forum_id'],
+            'is_locked' => $newState,
+            'user_id'   => $userId,
+        ]);
+
         return $newState;
     }
 
@@ -836,7 +821,7 @@ class ThreadSvc
      */
     public function moveThread(int $threadId, int $targetForumId, int $userId): void
     {
-        $thread = $this->threadRepo->findById($threadId);
+        $thread = Thread::findById($threadId);
         if (!$thread) {
             throw new \RuntimeException('帖子不存在');
         }
@@ -859,18 +844,15 @@ class ThreadSvc
 
         Database::beginTransaction();
         try {
-            Database::execute("UPDATE threads SET forum_id = ?, updated_at = ? WHERE id = ?", [$targetForumId, time(), $threadId]);
-            Database::execute("UPDATE forums SET thread_count = CASE WHEN thread_count > 0 THEN thread_count - 1 ELSE 0 END WHERE id = ?", [$sourceForum]);
-            Database::execute("UPDATE forums SET thread_count = thread_count + 1 WHERE id = ?", [$targetForumId]);
+            Thread::setForumBulk([$threadId], $targetForumId);
+            Forum::adjustThreadCount($sourceForum, -1);
+            Forum::adjustThreadCount($targetForumId, 1);
 
             // 同步 post_count：该帖下的回复数也要从源板块移到目标板块
-            $postCount = (int)(Database::fetchOne(
-                "SELECT COUNT(*) as c FROM posts WHERE thread_id = ? AND deleted_at IS NULL",
-                [$threadId]
-            )['c'] ?? 0);
+            $postCount = Post::countByThread($threadId);
             if ($postCount > 0) {
-                Database::execute("UPDATE forums SET post_count = CASE WHEN post_count >= ? THEN post_count - ? ELSE 0 END WHERE id = ?", [$postCount, $postCount, $sourceForum]);
-                Database::execute("UPDATE forums SET post_count = post_count + ? WHERE id = ?", [$postCount, $targetForumId]);
+                Forum::adjustPostCount($sourceForum, -$postCount);
+                Forum::adjustPostCount($targetForumId, $postCount);
             }
 
             Database::commit();
@@ -880,6 +862,7 @@ class ThreadSvc
         }
 
         Cache::delete("thread:{$threadId}");
+        \App\Models\Thread::forgetRowCachesFor([$threadId]);
         Cache::delete("forum:{$sourceForum}");
         Cache::delete("forum:{$targetForumId}");
         Cache::delete('forums:list');
@@ -891,6 +874,14 @@ class ThreadSvc
             'from_forum' => $sourceForum,
             'to_forum' => $targetForumId,
         ], $userId);
+
+        // 插件钩子：帖子被移动到别的板块
+        Event::dispatch(Events::MOD_THREAD_MOVED, [
+            'thread_id'     => $threadId,
+            'from_forum_id' => $sourceForum,
+            'to_forum_id'   => $targetForumId,
+            'user_id'       => $userId,
+        ]);
     }
 
     /**
@@ -898,13 +889,13 @@ class ThreadSvc
      */
     public function updatePost(int $postId, int $userId, string $content): void
     {
-        $post = $this->postRepo->findById($postId);
+        $post = Post::findById($postId);
         if (!$post) {
             throw new \RuntimeException('评论不存在');
         }
 
         // 权限：作者本人 或 管理员/版主
-        $thread = $this->threadRepo->findById((int)$post['thread_id']);
+        $thread = Thread::findById((int)$post['thread_id']);
         $forumId = $thread ? (int)$thread['forum_id'] : 0;
 
         if ((int)$post['user_id'] !== $userId && !PermissionSvc::canModerate($userId, 'update', $forumId)) {
@@ -919,11 +910,22 @@ class ThreadSvc
         $content = $contentFilter['text'];
 
         // 记录编辑历史
-        PostEditLogSvc::log((int)$post['thread_id'], $postId, $userId, $post['content'] ?? '', $content);
+        PostEditLog::log((int)$post['thread_id'], $postId, $userId, $post['content'] ?? '', $content);
 
-        $this->postRepo->update($postId, $content);
+        Post::update($postId, $content);
         Cache::delete("thread:{$post['thread_id']}");
+        \App\Models\Thread::forgetRowCachesFor([$post['thread_id']]);
         self::clearPostCache((int)$post['thread_id']);
+
+        // 插件钩子：作者改自己的回复 -> post.updated；版主/管理员改别人的 -> mod.post.edited
+        // 两个钩子互斥（不是同时触发两条），插件扣分、发通知不会重复执行。
+        $isAuthor = (int)$post['user_id'] === $userId;
+        Event::dispatch($isAuthor ? Events::POST_UPDATED : Events::MOD_POST_EDITED, [
+            'post_id'   => $postId,
+            'thread_id' => (int)$post['thread_id'],
+            'user_id'   => $userId,          // 谁执行的编辑
+            'author_id' => (int)$post['user_id'],   // 回复作者
+        ]);
     }
 
     /**
@@ -931,13 +933,13 @@ class ThreadSvc
      */
     public function deletePost(int $postId, int $userId): void
     {
-        $post = $this->postRepo->findById($postId);
+        $post = Post::findById($postId);
         if (!$post) {
             throw new \RuntimeException('评论不存在');
         }
 
         $threadId = (int)$post['thread_id'];
-        $thread = $this->threadRepo->findById($threadId);
+        $thread = Thread::findById($threadId);
         $forumId = $thread ? (int)$thread['forum_id'] : 0;
 
         // 权限：作者本人 或 管理员/版主
@@ -948,31 +950,16 @@ class ThreadSvc
         Database::beginTransaction();
 
         try {
-            $this->postRepo->softDelete($postId);
+            Post::softDelete($postId);
 
             if ($forumId > 0) {
                 $this->forumService->onPostDeleted($forumId);
             }
             $this->userService->decrementPostCount((int)$post['user_id']);
 
-            // 更新帖子回复数
-            Database::execute("UPDATE threads SET reply_count = CASE WHEN reply_count > 0 THEN reply_count - 1 ELSE 0 END, updated_at = ? WHERE id = ?", [time(), $threadId]);
-
-            // 更新 last_post 信息
-            $lastPost = Database::fetchOne(
-                "SELECT user_id, created_at FROM posts WHERE thread_id = ? AND deleted_at IS NULL ORDER BY created_at DESC LIMIT 1",
-                [$threadId]
-            );
-            if ($lastPost) {
-                Database::execute("UPDATE threads SET last_post_user_id = ?, last_post_time = ? WHERE id = ?",
-                    [(int)$lastPost['user_id'], (int)$lastPost['created_at'], $threadId]);
-            } else {
-                // 无回复时回退到帖子自身的创建时间和作者
-                $threadInfo = Database::fetchOne("SELECT user_id, created_at FROM threads WHERE id = ?", [$threadId]);
-                $fallbackUserId = $threadInfo ? (int)$threadInfo['user_id'] : 0;
-                $fallbackTime = $threadInfo ? (int)$threadInfo['created_at'] : 0;
-                Database::execute("UPDATE threads SET last_post_user_id = ?, last_post_time = ? WHERE id = ?", [$fallbackUserId, $fallbackTime, $threadId]);
-            }
+            // 更新帖子回复数，并重算「最后回复」（删掉的可能正是最新那条）
+            Thread::adjustReplyCount($threadId, -1);
+            Thread::refreshLastPost($threadId);
 
             Database::commit();
         } catch (\Throwable $e) {
@@ -982,7 +969,6 @@ class ThreadSvc
 
         RuntimeSvc::decrement('posts');
 
-        Cache::delete("thread:{$threadId}");
         self::clearPostCache($threadId);
         self::clearLatestCache();
         if ($forumId > 0) {
@@ -993,6 +979,90 @@ class ThreadSvc
             'thread_id' => $threadId,
             'author' => $post['username'] ?? '',
         ], $userId);
+
+        // 插件钩子：作者删自己的回复 -> post.deleted；版主/管理员删别人的 -> mod.post.deleted
+        $isAuthor = (int)$post['user_id'] === $userId;
+        Event::dispatch($isAuthor ? Events::POST_DELETED : Events::MOD_POST_DELETED, [
+            'post_id'   => $postId,
+            'thread_id' => $threadId,
+            'user_id'   => $userId,
+            'author_id' => (int)$post['user_id'],
+        ]);
+    }
+
+    /**
+     * 批量删除回帖（后台回帖管理用）
+     *
+     * 与单条删除同一套规则：软删除 → 按作者/主题/板块聚合扣减计数 →
+     * 重算受影响主题的「最后回复」→ 清缓存 → 记 mod 日志。
+     * 以前后台控制器自己拼了一套，缺了 last_post 重算与回复列表缓存清理，
+     * 表现是「删完回帖，列表和最后回复还是旧的」。
+     *
+     * @param int[] $postIds
+     * @return int 实际删除条数
+     */
+    public function batchDeletePosts(array $postIds, int $userId, int $groupId): int
+    {
+        if (!PermissionSvc::canModerate($userId, 'delete')) {
+            throw new \RuntimeException('没有删除权限');
+        }
+
+        $contexts = Post::getDeleteContexts($postIds);
+        if (empty($contexts)) {
+            return 0;
+        }
+
+        $ids = array_column($contexts, 'id');
+        $threadDeltas = [];
+        $userDeltas = [];
+        $forumDeltas = [];
+        foreach ($contexts as $c) {
+            $threadDeltas[$c['thread_id']] = ($threadDeltas[$c['thread_id']] ?? 0) + 1;
+            $userDeltas[$c['user_id']] = ($userDeltas[$c['user_id']] ?? 0) + 1;
+            if ($c['forum_id'] > 0) {
+                $forumDeltas[$c['forum_id']] = ($forumDeltas[$c['forum_id']] ?? 0) + 1;
+            }
+        }
+
+        Database::beginTransaction();
+
+        try {
+            $count = Post::softDeleteBulk($ids);
+
+            foreach ($threadDeltas as $tid => $delta) {
+                Thread::adjustReplyCount($tid, -$delta);
+            }
+            foreach ($userDeltas as $uid => $delta) {
+                User::adjustPostCount($uid, -$delta);
+            }
+            foreach ($forumDeltas as $fid => $delta) {
+                Forum::adjustPostCount($fid, -$delta);
+            }
+
+            // 「最后回复」要在事务里重算，避免删除后主题列表短暂显示已删回复
+            foreach (array_keys($threadDeltas) as $tid) {
+                Thread::refreshLastPost($tid);
+            }
+
+            Database::commit();
+        } catch (\Throwable $e) {
+            Database::rollBack();
+            throw $e;
+        }
+
+        foreach (array_keys($threadDeltas) as $tid) {
+            self::clearPostCache($tid);
+        }
+        self::clearLatestCache();
+        foreach (array_keys($forumDeltas) as $fid) {
+            self::clearForumCache($fid);
+        }
+
+        LogService::log('mod_batch_delete_post', 'post', 0, [
+            'post_ids' => $ids, 'count' => $count,
+        ], $userId);
+
+        return (int)$count;
     }
 
     /**
@@ -1012,26 +1082,13 @@ class ThreadSvc
         $intTids = array_filter($intTids, fn($t) => $t > 0);
         if (empty($intTids)) return 0;
 
-        // 批量验证存在性
-        $placeholders = implode(',', array_fill(0, count($intTids), '?'));
-        $existing = Database::fetchAll(
-            "SELECT id FROM threads WHERE id IN ({$placeholders}) AND deleted_at IS NULL",
-            $intTids
-        );
-        $existingIds = array_column($existing, 'id');
-        if (empty($existingIds)) return 0;
-
-        // 批量更新置顶级别
-        $ph2 = implode(',', array_fill(0, count($existingIds), '?'));
-        Database::execute(
-            "UPDATE threads SET is_top = ? WHERE id IN ({$ph2})",
-            array_merge([$level], $existingIds)
-        );
-        $count = count($existingIds);
-
-        foreach ($existingIds as $eid) {
-            Cache::delete("thread:{$eid}");
+        // 置顶级别由模型负责写库与行缓存失效，这里只管权限与审计
+        $count = Thread::setTopBulk($intTids, $level);
+        if ($count === 0) {
+            return 0;
         }
+
+        self::clearThreadListCache();
         LogService::log('mod_batch_top', 'thread', 0, [
             'tids' => $tids, 'level' => $level, 'count' => $count,
         ], $userId);
@@ -1051,12 +1108,7 @@ class ThreadSvc
         }
 
         // 批量查出所有待删帖子
-        $intTids = array_map('intval', $tids);
-        $ph = implode(',', array_fill(0, count($intTids), '?'));
-        $threads = Database::fetchAll(
-            "SELECT id, forum_id, user_id, reply_count FROM threads WHERE id IN ({$ph}) AND deleted_at IS NULL",
-            $intTids
-        );
+        $threads = Thread::rowsForBulkDelete(array_map('intval', $tids));
         if (empty($threads)) {
             return 0;
         }
@@ -1064,48 +1116,23 @@ class ThreadSvc
         $threadIds = array_column($threads, 'id');
         $count = count($threadIds);
         $affectedForums = [];
-        $threadPh = implode(',', array_fill(0, count($threadIds), '?'));
 
         Database::beginTransaction();
 
         try {
             // 1. 批量软删除帖子
-            Database::execute(
-                "UPDATE threads SET deleted_at = ? WHERE id IN ({$threadPh})",
-                array_merge([time()], $threadIds)
-            );
+            Thread::softDeleteByIds($threadIds, time());
 
             // 2. 批量查出所有回复作者，然后批量软删除回复
-            $replies = Database::fetchAll(
-                "SELECT user_id FROM posts WHERE thread_id IN ({$threadPh}) AND deleted_at IS NULL",
-                $threadIds
-            );
-            if (!empty($replies)) {
-                Database::execute(
-                    "UPDATE posts SET deleted_at = ? WHERE thread_id IN ({$threadPh}) AND deleted_at IS NULL",
-                    array_merge([time()], $threadIds)
-                );
+            $replyAuthors = Post::authorIdsInThreads($threadIds);
+            if (!empty($replyAuthors)) {
+                Post::softDeleteByThreadIds($threadIds, time());
                 // 按作者聚合回复数，批量扣减 users.post_count
                 $authorCounts = [];
-                foreach ($replies as $r) {
-                    $aid = (int)$r['user_id'];
+                foreach ($replyAuthors as $aid) {
                     $authorCounts[$aid] = ($authorCounts[$aid] ?? 0) + 1;
                 }
-                $cases = [];
-                $params = [];
-                foreach ($authorCounts as $aid => $cnt) {
-                    $cases[] = "WHEN id = ? THEN CASE WHEN post_count >= ? THEN post_count - ? ELSE 0 END";
-                    $params[] = $aid;
-                    $params[] = $cnt;
-                    $params[] = $cnt;
-                }
-                $caseStr = implode(' ', $cases);
-                $aidPh = implode(',', array_fill(0, count($authorCounts), '?'));
-                $params = array_merge($params, array_keys($authorCounts));
-                Database::execute(
-                    "UPDATE users SET post_count = CASE {$caseStr} ELSE post_count END WHERE id IN ({$aidPh})",
-                    $params
-                );
+                User::adjustPostCountBulk($authorCounts);
             }
 
             // 3. 按板块聚合 thread_count 和 post_count 扣减量
@@ -1125,49 +1152,10 @@ class ThreadSvc
             }
 
             // 批量更新 forums.thread_count 和 forums.post_count
-            $allFids = array_unique(array_merge(array_keys($forumThreadDec), array_keys($forumPostDec)));
-            $tCases = [];
-            $pCases = [];
-            $params = [];
-            foreach ($allFids as $fid) {
-                $dec = $forumThreadDec[$fid] ?? 0;
-                $tCases[] = "WHEN id = ? THEN CASE WHEN thread_count >= ? THEN thread_count - ? ELSE 0 END";
-                $params[] = $fid;
-                $params[] = $dec;
-                $params[] = $dec;
-            }
-            foreach ($allFids as $fid) {
-                $dec = $forumPostDec[$fid] ?? 0;
-                $pCases[] = "WHEN id = ? THEN CASE WHEN post_count >= ? THEN post_count - ? ELSE 0 END";
-                $params[] = $fid;
-                $params[] = $dec;
-                $params[] = $dec;
-            }
-            $tCaseStr = implode(' ', $tCases);
-            $pCaseStr = implode(' ', $pCases);
-            $fidPh = implode(',', array_fill(0, count($allFids), '?'));
-            $params = array_merge($params, $allFids);
-            Database::execute(
-                "UPDATE forums SET thread_count = CASE {$tCaseStr} ELSE thread_count END, post_count = CASE {$pCaseStr} ELSE post_count END WHERE id IN ({$fidPh})",
-                $params
-            );
+            Forum::decrementCountsBulk($forumThreadDec, $forumPostDec);
 
             // 4. 批量扣减帖子作者的 users.thread_count
-            $cases = [];
-            $params = [];
-            foreach ($userThreadDec as $uid => $dec) {
-                $cases[] = "WHEN id = ? THEN CASE WHEN thread_count >= ? THEN thread_count - ? ELSE 0 END";
-                $params[] = $uid;
-                $params[] = $dec;
-                $params[] = $dec;
-            }
-            $caseStr = implode(' ', $cases);
-            $uidPh = implode(',', array_fill(0, count($userThreadDec), '?'));
-            $params = array_merge($params, array_keys($userThreadDec));
-            Database::execute(
-                "UPDATE users SET thread_count = CASE {$caseStr} ELSE thread_count END WHERE id IN ({$uidPh})",
-                $params
-            );
+            User::adjustThreadCountBulk($userThreadDec);
 
             Database::commit();
         } catch (\Throwable $e) {
@@ -1179,6 +1167,7 @@ class ThreadSvc
         self::clearLatestCache();
         foreach ($threadIds as $tid) {
             Cache::delete("thread:{$tid}");
+        \App\Models\Thread::forgetRowCachesFor([$tid]);
         }
         RuntimeSvc::decrement('threads', $count);
         // 扣减全站回复统计
@@ -1217,16 +1206,8 @@ class ThreadSvc
         $count = 0;
         $affectedForums = [];
 
-        $intTids = array_map('intval', $tids);
-        $intTids = array_filter($intTids, fn($t) => $t > 0);
-        if (empty($intTids)) return 0;
-
         // 批量获取所有帖子信息（1 条 SQL 替代 N 条）
-        $placeholders = implode(',', array_fill(0, count($intTids), '?'));
-        $threads = Database::fetchAll(
-            "SELECT id, forum_id FROM threads WHERE id IN ({$placeholders}) AND deleted_at IS NULL AND forum_id != ?",
-            array_merge($intTids, [$forumId])
-        );
+        $threads = Thread::rowsForBulkMove(array_map('intval', $tids), $forumId);
         if (empty($threads)) return 0;
 
         $moveIds = array_column($threads, 'id');
@@ -1238,41 +1219,27 @@ class ThreadSvc
         Database::beginTransaction();
 
         try {
-            // 批量更新帖子板块
-            $ph2 = implode(',', array_fill(0, count($moveIds), '?'));
-            Database::execute(
-                "UPDATE threads SET forum_id = ?, updated_at = ? WHERE id IN ({$ph2})",
-                array_merge([$forumId, time()], $moveIds)
-            );
+            // 批量更新帖子板块（行缓存在模型里失效）
+            Thread::setForumBulk($moveIds, $forumId);
             $count = count($moveIds);
 
             // 按源板块分组更新统计
             foreach ($sourceFids as $srcFid => $srcTids) {
                 $srcCount = count($srcTids);
-                Database::execute(
-                    "UPDATE forums SET thread_count = CASE WHEN thread_count >= ? THEN thread_count - ? ELSE 0 END WHERE id = ?",
-                    [$srcCount, $srcCount, $srcFid]
-                );
+                Forum::adjustThreadCount($srcFid, -$srcCount);
 
                 // 批量统计这些帖子的回复数
-                $phSrc = implode(',', array_fill(0, count($srcTids), '?'));
-                $postSum = (int)(Database::fetchOne(
-                    "SELECT COUNT(*) as c FROM posts WHERE thread_id IN ({$phSrc}) AND deleted_at IS NULL",
-                    $srcTids
-                )['c'] ?? 0);
+                $postSum = Post::countActiveByThreadIds($srcTids);
                 if ($postSum > 0) {
-                    Database::execute(
-                        "UPDATE forums SET post_count = CASE WHEN post_count >= ? THEN post_count - ? ELSE 0 END WHERE id = ?",
-                        [$postSum, $postSum, $srcFid]
-                    );
-                    Database::execute("UPDATE forums SET post_count = post_count + ? WHERE id = ?", [$postSum, $forumId]);
+                    Forum::adjustPostCount($srcFid, -$postSum);
+                    Forum::adjustPostCount($forumId, $postSum);
                 }
 
                 $affectedForums[$srcFid] = true;
             }
 
             // 目标板块增加帖子数
-            Database::execute("UPDATE forums SET thread_count = thread_count + ? WHERE id = ?", [$count, $forumId]);
+            Forum::adjustThreadCount($forumId, $count);
 
             Database::commit();
         } catch (\Throwable $e) {
@@ -1284,6 +1251,7 @@ class ThreadSvc
         Cache::delete('forums:list');
         foreach ($tids as $tid) {
             Cache::delete("thread:{$tid}");
+        \App\Models\Thread::forgetRowCachesFor([$tid]);
         }
         $affectedForums[$forumId] = true;
         foreach (array_keys($affectedForums) as $fid) {
@@ -1303,34 +1271,41 @@ class ThreadSvc
         if (!PermissionSvc::canModerate($userId, 'lock')) {
             throw new \RuntimeException('没有锁定权限');
         }
-        $count = 0;
-        $intTids = array_map('intval', $tids);
-        $intTids = array_filter($intTids, fn($t) => $t > 0);
-        if (empty($intTids)) return 0;
 
-        // 批量验证存在性
-        $placeholders = implode(',', array_fill(0, count($intTids), '?'));
-        $existing = Database::fetchAll(
-            "SELECT id FROM threads WHERE id IN ({$placeholders}) AND deleted_at IS NULL",
-            $intTids
-        );
-        $existingIds = array_column($existing, 'id');
-        if (empty($existingIds)) return 0;
-
-        // 批量更新锁定状态
-        $ph2 = implode(',', array_fill(0, count($existingIds), '?'));
-        Database::execute(
-            "UPDATE threads SET is_locked = ?, updated_at = ? WHERE id IN ({$ph2})",
-            array_merge([(int)$lock, time()], $existingIds)
-        );
-        $count = count($existingIds);
-
-        foreach ($existingIds as $eid) {
-            Cache::delete("thread:{$eid}");
+        // 只更新确实存在的行，受影响行数即真实成功数（模型内部按 id 失效行缓存）
+        $count = Thread::setLockedBulk($tids, $lock);
+        if ($count === 0) {
+            return 0;
         }
+
+        self::clearLatestCache();
         LogService::log($lock ? 'mod_batch_lock' : 'mod_batch_unlock', 'thread', 0, [
             'tids' => $tids, 'count' => $count,
         ], $userId);
+
+        return $count;
+    }
+
+    /**
+     * 批量加精 / 取消加精
+     */
+    public function batchDigest(array $tids, int $level, int $userId, int $groupId): int
+    {
+        if (!PermissionSvc::canModerate($userId, 'digest')) {
+            throw new \RuntimeException('没有加精权限');
+        }
+
+        $level = max(0, min(3, $level));
+        $count = Thread::setHighlightBulk($tids, $level);
+        if ($count === 0) {
+            return 0;
+        }
+
+        self::clearLatestCache();
+        LogService::log($level > 0 ? 'mod_batch_highlight' : 'mod_batch_unhighlight', 'thread', 0, [
+            'tids' => $tids, 'level' => $level, 'count' => $count,
+        ], $userId);
+
         return $count;
     }
 }

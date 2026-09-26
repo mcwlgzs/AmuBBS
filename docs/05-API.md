@@ -1,813 +1,238 @@
-# API 接口设计
+# API 接口
 
-## 5.1 API 设计原则
+> 本文按当前实现重写。早期草稿里的响应格式（`{success, data, error:{code}}`）、
+> WebSocket 实时通知、`RateLimiter` 直接用 Redis `incr` 等都与代码不符，已全部替换。
+>
+> 真实约定：**响应体统一是 `{code, message, data}`，`code=0` 表示成功**，
+> 错误用 HTTP 状态码表达类别；通知走轮询，**没有 WebSocket**。
 
-### 5.1.1 RESTful 规范
-- **资源导向**：URL 表示资源，HTTP 方法表示操作
-- **统一接口**：GET（查询）、POST（创建）、PUT（更新）、DELETE（删除）
-- **无状态**：每次请求包含完整信息，支持 Token 认证
-- **分层系统**：客户端无需关心服务端实现细节
+## 5.1 通用约定
 
-### 5.1.2 响应格式
+### 5.1.1 响应格式
 
-#### 成功响应
+```json
+// 成功（HTTP 200）
+{ "code": 0, "message": "ok", "data": { "id": 12, "title": "示例" } }
+
+// 失败（HTTP 400/401/403/404/429）
+{ "code": -1, "message": "帖子不存在", "data": null }
+```
+
+- `code`：`0` 成功，`-1`（或其它非 0）失败；判成功请用 `code === 0`，不要只看 HTTP 200。
+- `message`：给自己看的中文提示，可直接展示。
+- `data`：成功时的数据；失败时为 `null`。
+- 实现见 `app/Controllers/ApiBase.php` 的 `apiSuccess()` / `apiError()`。
+
+> ⚠️ 后台的 JSON 表格接口（`/admin/api/*`）用的是另一套：`{code, msg, data, count}`。
+> 两套别混用，见 5.6。
+
+### 5.1.2 状态码
+
+| 状态码 | 含义 | 典型场景 |
+| --- | --- | --- |
+| 200 | 成功 | 正常返回 |
+| 400 | 参数错误 | 标题太短、缺少必填字段 |
+| 401 | 未认证 / Token 失效 | 没带头、Token 过期（有效期 30 天） |
+| 403 | 无权限 | 没有该板块的发帖权限 |
+| 404 | 资源不存在 | 用户 / 板块 / 帖子不存在 |
+| 429 | 触发限流 | 全局或严格限流（见 5.3） |
+| 500 | 服务端错误 | 数据库异常等，`message` 为通用提示 |
+
+### 5.1.3 认证
+
+```http
+Authorization: Bearer {token}
+```
+
+- Token 由 `POST /api/auth/login` 或 `POST /api/auth/register` 返回；
+- 服务端只存 **sha256 哈希**（`User::findByApiToken(hash('sha256', $token))`），
+  所以 Token 只在生成时出现一次，丢了只能重新登录；
+- 有效期 **30 天**（`ApiBase::TOKEN_TTL = 86400 * 30`），过期或登出后清除；
+- 需要登录的端点用 `authenticate()`（未登录返回 401），公开端点用 `optionalAuth()`（登录则带出用户）。
+
+### 5.1.4 分页
+
+列表类端点统一返回：
+
 ```json
 {
-  "success": true,
+  "code": 0,
+  "message": "ok",
   "data": {
-    "id": 123,
-    "title": "示例帖子"
-  },
-  "message": "操作成功",
-  "timestamp": 1708617600
-}
-```
-
-#### 错误响应
-```json
-{
-  "success": false,
-  "error": {
-    "code": "THREAD_NOT_FOUND",
-    "message": "帖子不存在",
-    "details": null
-  },
-  "timestamp": 1708617600
-}
-```
-
-#### 分页响应
-```json
-{
-  "success": true,
-  "data": [
-    {"id": 1, "title": "帖子1"},
-    {"id": 2, "title": "帖子2"}
-  ],
-  "pagination": {
-    "total": 100,
+    "items": [ ... ],
+    "total": 137,
     "page": 1,
-    "page_size": 20,
-    "total_pages": 5
+    "per_page": 20,
+    "total_pages": 7
   }
 }
 ```
 
-### 5.1.3 HTTP 状态码
+`per_page` 上限 50，`page` 上限 500。
 
-| 状态码 | 说明 | 使用场景 |
-|--------|------|----------|
-| 200 | OK | 请求成功 |
-| 201 | Created | 资源创建成功 |
-| 204 | No Content | 删除成功（无返回内容） |
-| 400 | Bad Request | 请求参数错误 |
-| 401 | Unauthorized | 未认证 |
-| 403 | Forbidden | 无权限 |
-| 404 | Not Found | 资源不存在 |
-| 422 | Unprocessable Entity | 验证失败 |
-| 429 | Too Many Requests | 请求过于频繁 |
-| 500 | Internal Server Error | 服务器错误 |
+### 5.1.5 请求体
 
-## 5.2 认证与授权
+JSON 请求体或表单 `application/x-www-form-urlencoded` 都可以（`Base::getJsonInput()` 会兼容）；
+带 Bearer Token 的 `/api/*` 请求**免除 CSRF 校验**，没有 Token 的 `/api/*` POST 仍要过 CSRF。
 
-### 5.2.1 Token 认证
+## 5.2 端点清单
 
-#### 登录获取 Token
-```http
-POST /api/auth/login
-Content-Type: application/json
+共 15 条路由（`core/Bootstrap.php` 注册）：
 
-{
-  "email": "user@example.com",
-  "password": "password123"
-}
-```
+### 5.2.1 认证
 
-响应：
-```json
-{
-  "success": true,
-  "data": {
-    "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
-    "expires_in": 86400,
-    "user": {
-      "id": 123,
-      "username": "testuser",
-      "email": "user@example.com"
-    }
-  }
-}
-```
-
-#### 使用 Token
-```http
-GET /api/threads
-Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
-```
-
-### 5.2.2 Token 实现
-
-```php
-<?php
-// app/Services/AuthService.php
-
-namespace App\Services;
-
-use Firebase\JWT\JWT;
-use Firebase\JWT\Key;
-
-class AuthService
-{
-    private string $secretKey;
-    private int $expiresIn = 86400; // 24小时
-
-    public function __construct()
-    {
-        $this->secretKey = $_ENV['JWT_SECRET'] ?? 'your-secret-key';
-    }
-
-    /**
-     * 生成 Token
-     */
-    public function generateToken(int $userId): string
-    {
-        $payload = [
-            'iss' => 'amubbs',              // 签发者
-            'iat' => time(),                // 签发时间
-            'exp' => time() + $this->expiresIn,  // 过期时间
-            'uid' => $userId,               // 用户ID
-        ];
-
-        return JWT::encode($payload, $this->secretKey, 'HS256');
-    }
-
-    /**
-     * 验证 Token
-     */
-    public function verifyToken(string $token): ?array
-    {
-        try {
-            $decoded = JWT::decode($token, new Key($this->secretKey, 'HS256'));
-            return (array) $decoded;
-        } catch (\Exception $e) {
-            return null;
-        }
-    }
-
-    /**
-     * 从请求头获取用户ID
-     */
-    public function getUserIdFromRequest(): ?int
-    {
-        $authHeader = $_SERVER['HTTP_AUTHORIZATION'] ?? '';
-
-        if (!preg_match('/Bearer\s+(.*)$/i', $authHeader, $matches)) {
-            return null;
-        }
-
-        $token = $matches[1];
-        $payload = $this->verifyToken($token);
-
-        return $payload['uid'] ?? null;
-    }
-}
-```
-
-## 5.3 用户相关接口
-
-### 5.3.1 用户注册
-
-```http
-POST /api/users/register
-Content-Type: application/json
-
-{
-  "username": "newuser",
-  "email": "newuser@example.com",
-  "password": "password123"
-}
-```
-
-响应：
-```json
-{
-  "success": true,
-  "data": {
-    "user_id": 124,
-    "username": "newuser",
-    "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
-  },
-  "message": "注册成功"
-}
-```
-
-### 5.3.2 用户登录
+| 方法 | 路径 | 参数 | 说明 |
+| --- | --- | --- | --- |
+| POST | `/api/auth/login` | `username`, `password` | 返回 `token` + `user`；受严格限流 |
+| POST | `/api/auth/register` | `username`, `email`, `password`, `password_confirm`, `nickname`(可选) | 返回 `token` + `user`；受严格限流 |
+| POST | `/api/auth/logout` | 无 | 清除当前 Token |
 
 ```http
 POST /api/auth/login
 Content-Type: application/json
 
-{
-  "email": "user@example.com",
-  "password": "password123"
-}
+{ "username": "admin", "password": "******" }
 ```
 
-### 5.3.3 获取用户信息
-
-```http
-GET /api/users/{user_id}
-Authorization: Bearer {token}
-```
-
-响应：
 ```json
 {
-  "success": true,
+  "code": 0,
+  "message": "ok",
   "data": {
-    "id": 123,
-    "username": "testuser",
-    "avatar": "https://example.com/avatar.jpg",
-    "group_id": 1,
-    "credits": 1000,
-    "threads": 50,
-    "posts": 200,
-    "created_at": 1708617600
+    "token": "9f2c…（仅此一次可见）",
+    "user": { "id": 1, "username": "admin", "nickname": "管理员", "group_id": 3 }
   }
 }
 ```
 
-### 5.3.4 更新用户信息
+### 5.2.2 用户
 
-```http
-PUT /api/users/{user_id}
-Authorization: Bearer {token}
-Content-Type: application/json
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| GET | `/api/users/me` | 需要登录，返回自己的安全字段（`UserSvc::safeInfo`） |
+| GET | `/api/users/{id}` | 公开的用户资料，不存在返回 404 |
 
-{
-  "avatar": "https://example.com/new-avatar.jpg",
-  "signature": "这是我的个性签名"
-}
-```
+### 5.2.3 板块
 
-## 5.4 板块相关接口
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| GET | `/api/forums` | 板块列表（含层级信息） |
+| GET | `/api/forums/{id}` | 单个板块，不存在返回 404 |
 
-### 5.4.1 获取板块列表
+### 5.2.4 主题与回复
 
-```http
-GET /api/forums
-```
+| 方法 | 路径 | 参数 | 说明 |
+| --- | --- | --- | --- |
+| GET | `/api/threads` | `forum_id`(可选), `page`, `per_page` | 不传 `forum_id` 时是全站最新 |
+| GET | `/api/threads/{id}` | — | 主题详情 |
+| POST | `/api/threads` | `forum_id`, `title`(≥2 字), `content`(≥5 字) | 需登录；无权限返回 403 |
+| GET | `/api/threads/{id}/posts` | `page`, `per_page` | 回复列表（分页） |
+| POST | `/api/threads/{id}/posts` | `content` | 需登录，发回复 |
 
-响应：
+发帖走的是与网页版**同一个** `ThreadSvc::createThread()`：
+防灌水、IP 频率、敏感词、插件过滤器（`thread.title` / `post.content`）全部一样生效，
+也会正常派发 `thread.created` / `post.created` 事件。
+
+### 5.2.5 搜索
+
+| 方法 | 路径 | 参数 | 说明 |
+| --- | --- | --- | --- |
+| GET | `/api/search` | `q`, `type`(`thread`\|`post`), `page` | 受搜索专用限流；空 `q` 直接返回空结果 |
+
+中文短词不依赖 FULLTEXT：`SearchSvc` 在无全文索引时会走 LIKE 回退（见 `install/INSTALL.md` 的说明）。
+
+### 5.2.6 通知
+
+| 方法 | 路径 | 参数 | 说明 |
+| --- | --- | --- | --- |
+| GET | `/api/notifications` | `page` | 返回 `items` / `total` / `unread` / `page` |
+| POST | `/api/notifications/read` | `ids`(数组，可选) | 传 `ids` 标记指定几条（最多 100 条），不传则全部已读 |
+
 ```json
 {
-  "success": true,
-  "data": [
-    {
-      "id": 1,
-      "name": "技术讨论",
-      "description": "技术相关话题",
-      "threads": 1000,
-      "posts": 5000,
-      "children": [
-        {
-          "id": 2,
-          "name": "PHP",
-          "threads": 500,
-          "posts": 2500
-        }
-      ]
-    }
-  ]
-}
-```
-
-### 5.4.2 获取板块详情
-
-```http
-GET /api/forums/{forum_id}
-```
-
-### 5.4.3 创建板块（管理员）
-
-```http
-POST /api/forums
-Authorization: Bearer {token}
-Content-Type: application/json
-
-{
-  "parent_id": 0,
-  "name": "新板块",
-  "description": "板块描述",
-  "rank": 10
-}
-```
-
-## 5.5 帖子相关接口
-
-### 5.5.1 获取帖子列表
-
-```http
-GET /api/threads?forum_id=1&page=1&page_size=20&sort=latest
-```
-
-查询参数：
-- `forum_id`: 板块ID（可选）
-- `page`: 页码（默认1）
-- `page_size`: 每页数量（默认20，最大100）
-- `sort`: 排序方式（latest/hot/replies）
-
-响应：
-```json
-{
-  "success": true,
-  "data": [
-    {
-      "id": 1,
-      "forum_id": 1,
-      "title": "示例帖子",
-      "user": {
-        "id": 123,
-        "username": "testuser",
-        "avatar": "https://example.com/avatar.jpg"
-      },
-      "views": 1000,
-      "posts": 50,
-      "is_top": false,
-      "is_elite": false,
-      "last_post_time": 1708617600,
-      "created_at": 1708617000
-    }
-  ],
-  "pagination": {
-    "total": 100,
-    "page": 1,
-    "page_size": 20,
-    "total_pages": 5
+  "code": 0,
+  "message": "ok",
+  "data": {
+    "items": [
+      { "id": 88, "type": "reply", "title": "有人回复了你的帖子", "is_read": 0, "created_at": 1790313968 }
+    ],
+    "total": 12,
+    "unread": 3,
+    "page": 1
   }
 }
 ```
 
-### 5.5.2 获取帖子详情
+## 5.3 频率限制
 
-```http
-GET /api/threads/{thread_id}
-```
+限流在**全局中间件**里，基于缓存计数器（`Cache::incrementWithLimit()`，文件驱动下同样原子），
+配置项在后台「系统设置」里可改：
 
-响应：
+| 范围 | 设置键（默认值） | 适用 |
+| --- | --- | --- |
+| 全局 | `rate_limit_global_max` = 60 / `rate_limit_global_window` = 60 秒 | 所有请求（按 IP 计数） |
+| 严格 | `rate_limit_strict_max` = 5 / `rate_limit_strict_window` = 300 秒 | `/api/auth/login`、`/api/auth/register` |
+| 搜索 | `rate_limit_search_max` = 10 / `rate_limit_search_window` = 60 秒 | 搜索类路由 |
+
+超限返回 **429**：
+
 ```json
-{
-  "success": true,
-  "data": {
-    "thread": {
-      "id": 1,
-      "forum_id": 1,
-      "title": "示例帖子",
-      "user": {
-        "id": 123,
-        "username": "testuser",
-        "avatar": "https://example.com/avatar.jpg"
-      },
-      "views": 1000,
-      "posts": 50,
-      "is_top": false,
-      "is_elite": false,
-      "created_at": 1708617000
-    },
-    "posts": [
-      {
-        "id": 1,
-        "thread_id": 1,
-        "user": {
-          "id": 123,
-          "username": "testuser",
-          "avatar": "https://example.com/avatar.jpg"
-        },
-        "content": "这是帖子内容",
-        "content_format": "markdown",
-        "floor": 1,
-        "likes": 10,
-        "created_at": 1708617000
-      }
-    ]
-  }
-}
+{ "code": -1, "message": "操作过于频繁，请稍后再试", "data": null }
 ```
 
-### 5.5.3 创建帖子
+htmx 请求额外带 `HX-Trigger: frontFlash`，前台会弹出具体原因而不是一句「请求失败」。
+注意：**不做限流的极端情况是「缓存后端不可用」**——那时 `Cache` 会记录日志并放行本次请求
+（宁可放行也不误伤正常用户，见 `core/Cache.php` 的降级分支）。
 
-```http
-POST /api/threads
-Authorization: Bearer {token}
-Content-Type: application/json
+## 5.4 通知为什么是轮询
 
-{
-  "forum_id": 1,
-  "title": "新帖子标题",
-  "content": "帖子内容",
-  "content_format": "markdown",
-  "tags": ["PHP", "性能优化"]
-}
+前台与后台都用**轮询**，不用 WebSocket：
+
+| 场景 | 实现 |
+| --- | --- |
+| 前台未读红点 | `assets/js/app.js` 定时 `fetch('/notifications/unread-count')` |
+| 前台通知面板 | htmx `GET /notifications/popup` 取回片段塞进 `#notifPopup`，`POST /notifications/read-all` 全部已读 |
+| 后台通知角标 | 定时 `fetch('/admin/api/notifications?page=1&limit=1')` |
+| 移动端 / 第三方 | `GET /api/notifications` + `POST /api/notifications/read` |
+
+原因：WebSocket 需要常驻进程（Swoole / Workerman），本项目目标环境是**没有 root、没有常驻进程**
+的共享虚拟主机。轮询间隔刻意放长（未读数 30–60 秒级），代价是可控的几次轻查询。
+
+## 5.5 快速自测
+
+```bash
+BASE=http://127.0.0.1:8000
+
+# 1. 登录拿 Token
+TOKEN=$(curl -s -X POST $BASE/api/auth/login \
+  -H 'Content-Type: application/json' \
+  -d '{"username":"admin","password":"admin123456"}' | php -r 'echo json_decode(stream_get_contents(STDIN), true)["data"]["token"] ?? "";')
+
+# 2. 带 Token 访问
+curl -s $BASE/api/users/me -H "Authorization: Bearer $TOKEN"
+
+# 3. 主题列表（公开）
+curl -s "$BASE/api/threads?forum_id=1&per_page=5"
 ```
 
-响应：
-```json
-{
-  "success": true,
-  "data": {
-    "thread_id": 101,
-    "title": "新帖子标题"
-  },
-  "message": "发帖成功"
-}
-```
-
-### 5.5.4 更新帖子
-
-```http
-PUT /api/threads/{thread_id}
-Authorization: Bearer {token}
-Content-Type: application/json
-
-{
-  "title": "修改后的标题",
-  "content": "修改后的内容"
-}
-```
-
-### 5.5.5 删除帖子
-
-```http
-DELETE /api/threads/{thread_id}
-Authorization: Bearer {token}
-```
-
-### 5.5.6 置顶/加精帖子（版主/管理员）
-
-```http
-POST /api/threads/{thread_id}/actions
-Authorization: Bearer {token}
-Content-Type: application/json
-
-{
-  "action": "top",  // top/untop/elite/unelite/lock/unlock
-  "value": true
-}
-```
-
-## 5.6 回复相关接口
-
-### 5.6.1 获取回复列表
-
-```http
-GET /api/threads/{thread_id}/posts?page=1&page_size=20
-```
-
-### 5.6.2 创建回复
-
-```http
-POST /api/threads/{thread_id}/posts
-Authorization: Bearer {token}
-Content-Type: application/json
-
-{
-  "content": "回复内容",
-  "content_format": "markdown",
-  "quote_post_id": 5  // 可选：引用的回复ID
-}
-```
-
-响应：
-```json
-{
-  "success": true,
-  "data": {
-    "post_id": 201,
-    "floor": 51
-  },
-  "message": "回复成功"
-}
-```
-
-### 5.6.3 更新回复
-
-```http
-PUT /api/posts/{post_id}
-Authorization: Bearer {token}
-Content-Type: application/json
-
-{
-  "content": "修改后的回复内容"
-}
-```
-
-### 5.6.4 删除回复
-
-```http
-DELETE /api/posts/{post_id}
-Authorization: Bearer {token}
-```
-
-### 5.6.5 点赞回复
-
-```http
-POST /api/posts/{post_id}/like
-Authorization: Bearer {token}
-```
-
-响应：
-```json
-{
-  "success": true,
-  "data": {
-    "likes": 11
-  },
-  "message": "点赞成功"
-}
-```
-
-## 5.7 搜索接口
-
-### 5.7.1 全文搜索
-
-```http
-GET /api/search?q=关键词&type=thread&page=1&page_size=20
-```
-
-查询参数：
-- `q`: 搜索关键词
-- `type`: 搜索类型（thread/post/user）
-- `forum_id`: 限定板块（可选）
-- `page`: 页码
-- `page_size`: 每页数量
-
-响应：
-```json
-{
-  "success": true,
-  "data": [
-    {
-      "id": 1,
-      "title": "包含关键词的帖子",
-      "excerpt": "...关键词...",
-      "user": {
-        "id": 123,
-        "username": "testuser"
-      },
-      "created_at": 1708617000
-    }
-  ],
-  "pagination": {
-    "total": 50,
-    "page": 1,
-    "page_size": 20,
-    "total_pages": 3
-  }
-}
-```
-
-### 5.7.2 标签搜索
-
-```http
-GET /api/tags/{tag_name}/threads?page=1
-```
-
-## 5.8 通知接口
-
-### 5.8.1 获取通知列表
-
-```http
-GET /api/notifications?is_read=0&page=1&page_size=20
-Authorization: Bearer {token}
-```
-
-响应：
-```json
-{
-  "success": true,
-  "data": [
-    {
-      "id": 1,
-      "type": "reply",
-      "content": "testuser 回复了你的帖子",
-      "from_user": {
-        "id": 124,
-        "username": "testuser",
-        "avatar": "https://example.com/avatar.jpg"
-      },
-      "related_id": 101,
-      "is_read": false,
-      "created_at": 1708617000
-    }
-  ],
-  "unread_count": 5
-}
-```
-
-### 5.8.2 标记通知已读
-
-```http
-PUT /api/notifications/{notification_id}/read
-Authorization: Bearer {token}
-```
-
-### 5.8.3 批量标记已读
-
-```http
-PUT /api/notifications/read-all
-Authorization: Bearer {token}
-```
-
-## 5.9 文件上传接口
-
-### 5.9.1 上传图片
-
-```http
-POST /api/upload/image
-Authorization: Bearer {token}
-Content-Type: multipart/form-data
-
-file: [binary data]
-```
-
-响应：
-```json
-{
-  "success": true,
-  "data": {
-    "url": "https://example.com/uploads/2026/02/image.jpg",
-    "width": 1920,
-    "height": 1080,
-    "size": 524288
-  }
-}
-```
-
-### 5.9.2 上传附件
-
-```http
-POST /api/upload/attachment
-Authorization: Bearer {token}
-Content-Type: multipart/form-data
-
-file: [binary data]
-```
-
-## 5.10 WebSocket 实时通知
-
-### 5.10.1 连接建立
-
-```javascript
-const ws = new WebSocket('ws://amubbs.com/ws?token=' + userToken);
-
-ws.onopen = function() {
-    console.log('WebSocket 连接已建立');
-};
-
-ws.onmessage = function(event) {
-    const data = JSON.parse(event.data);
-    handleNotification(data);
-};
-
-ws.onerror = function(error) {
-    console.error('WebSocket 错误:', error);
-};
-
-ws.onclose = function() {
-    console.log('WebSocket 连接已关闭');
-    // 重连逻辑
-    setTimeout(() => reconnect(), 3000);
-};
-```
-
-### 5.10.2 消息格式
-
-#### 新回复通知
-```json
-{
-  "type": "reply",
-  "data": {
-    "thread_id": 101,
-    "post_id": 201,
-    "user": {
-      "id": 124,
-      "username": "testuser"
-    },
-    "content": "回复内容摘要..."
-  },
-  "timestamp": 1708617000
-}
-```
-
-#### @提醒通知
-```json
-{
-  "type": "mention",
-  "data": {
-    "thread_id": 101,
-    "post_id": 201,
-    "user": {
-      "id": 124,
-      "username": "testuser"
-    },
-    "content": "@你 的内容..."
-  },
-  "timestamp": 1708617000
-}
-```
-
-#### 私信通知
-```json
-{
-  "type": "message",
-  "data": {
-    "message_id": 301,
-    "from_user": {
-      "id": 124,
-      "username": "testuser"
-    },
-    "content": "私信内容..."
-  },
-  "timestamp": 1708617000
-}
-```
-
-## 5.11 限流策略
-
-### 5.11.1 限流规则
-
-| 操作 | 限制 | 时间窗口 |
-|------|------|----------|
-| 登录 | 5次 | 5分钟 |
-| 注册 | 3次 | 1小时 |
-| 发帖 | 10次 | 1小时 |
-| 回复 | 30次 | 1小时 |
-| 搜索 | 60次 | 1分钟 |
-| 上传 | 20次 | 1小时 |
-
-### 5.11.2 限流实现
-
-```php
-<?php
-// app/Middlewares/RateLimiter.php
-
-namespace App\Middlewares;
-
-use Core\Cache;
-
-class RateLimiter
-{
-    /**
-     * 检查限流
-     */
-    public function check(string $action, int $userId, int $limit, int $window): bool
-    {
-        $key = "ratelimit:{$action}:{$userId}";
-        $count = Cache::getRedis()->incr($key);
-
-        if ($count === 1) {
-            Cache::getRedis()->expire($key, $window);
-        }
-
-        if ($count > $limit) {
-            http_response_code(429);
-            echo json_encode([
-                'success' => false,
-                'error' => [
-                    'code' => 'RATE_LIMIT_EXCEEDED',
-                    'message' => '操作过于频繁，请稍后再试',
-                ],
-            ]);
-            exit;
-        }
-
-        return true;
-    }
-}
-```
-
-## 5.12 错误码定义
-
-| 错误码 | 说明 |
-|--------|------|
-| `INVALID_PARAMS` | 参数错误 |
-| `UNAUTHORIZED` | 未认证 |
-| `FORBIDDEN` | 无权限 |
-| `USER_NOT_FOUND` | 用户不存在 |
-| `THREAD_NOT_FOUND` | 帖子不存在 |
-| `POST_NOT_FOUND` | 回复不存在 |
-| `FORUM_NOT_FOUND` | 板块不存在 |
-| `DUPLICATE_USERNAME` | 用户名已存在 |
-| `DUPLICATE_EMAIL` | 邮箱已存在 |
-| `INVALID_CREDENTIALS` | 用户名或密码错误 |
-| `RATE_LIMIT_EXCEEDED` | 请求过于频繁 |
-| `FLOOD_CONTROL` | 发帖/回复太频繁 |
-| `SENSITIVE_WORD` | 包含敏感词 |
-| `FILE_TOO_LARGE` | 文件过大 |
-| `INVALID_FILE_TYPE` | 文件类型不支持 |
-| `SERVER_ERROR` | 服务器错误 |
-
----
-
-**文档版本**: v1.0
-**创建日期**: 2026-02-22
+## 5.6 与后台 JSON 接口的区别
+
+| | `/api/*` | `/admin/api/*` |
+| --- | --- | --- |
+| 用途 | 移动端 / 第三方集成 | 后台页面与顶栏角标的兼容接口 |
+| 认证 | `Authorization: Bearer` | 管理员会话 + AdminAuth 中间件 |
+| 格式 | `{code, message, data}` | `{code, msg, data, count}` |
+| 数量 | 15 条 | 16 条 |
+
+后台页面本身是 **layuimini v2 + Layui 2.6.3 的 iframe 多标签外壳**（完整服务端渲染页面，不用 htmx——htmx 只在前台加载），这些 `/admin/api/*` 接口主要为后台顶栏角标、弹窗内的异步提交与旧调用方保留。
+
+## 5.7 排错
+
+| 现象 | 原因 |
+| --- | --- |
+| 一律 401 | 没带 `Authorization` 头、格式不是 `Bearer xxx`，或 Token 已过期（30 天） |
+| 401 但刚登录过 | 密码/用户名改动或后台清过 `api_token` 字段，需要重新登录 |
+| POST `/api/*` 报 CSRF 失败 | 没带 Bearer Token（无 Token 的 `/api/*` POST 仍受 CSRF 保护） |
+| 429 频繁出现 | 全网 60/60s 或搜索 10/60s 上限；调后台设置或给脚本加节流 |
+| `code` 非 0 但 HTTP 200 | 不可能：失败一定配 4xx/5xx；若真遇到，说明是缓存的旧响应，清一次缓存 |
+| 搜索中文没结果 | 先看 `install/optional_fulltext.sql` 是否导入；短词走 LIKE，属预期行为 |

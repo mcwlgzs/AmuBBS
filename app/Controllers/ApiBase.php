@@ -6,7 +6,7 @@
 
 namespace App\Controllers;
 
-use Core\Database;
+use App\Models\User;
 
 class ApiBase extends Base
 {
@@ -29,11 +29,7 @@ class ApiBase extends Base
         }
 
         $token = $matches[1];
-        $tokenHash = hash('sha256', $token);
-        $user = Database::fetchOne(
-            "SELECT id, username, email, group_id, credits, login_at FROM users WHERE api_token = ? AND deleted_at IS NULL",
-            [$tokenHash]
-        );
+        $user = User::findByApiToken(hash('sha256', $token));
 
         if (!$user) {
             $this->apiError('Token 无效或已过期', 401);
@@ -44,7 +40,7 @@ class ApiBase extends Base
         $loginAt = (int)($user['login_at'] ?? 0);
         if ($loginAt > 0 && (time() - $loginAt) > self::TOKEN_TTL) {
             // 清除过期 token
-            Database::execute("UPDATE users SET api_token = NULL WHERE id = ?", [$user['id']]);
+            User::setApiToken((int)$user['id'], null);
             $this->apiError('Token 已过期，请重新登录', 401);
             return;
         }
@@ -59,11 +55,7 @@ class ApiBase extends Base
     {
         $header = $_SERVER['HTTP_AUTHORIZATION'] ?? '';
         if (preg_match('/^Bearer\s+(.+)$/i', $header, $matches)) {
-            $tokenHash = hash('sha256', $matches[1]);
-            $user = Database::fetchOne(
-                "SELECT id, username, email, group_id, credits, login_at FROM users WHERE api_token = ? AND deleted_at IS NULL",
-                [$tokenHash]
-            );
+            $user = User::findByApiToken(hash('sha256', $matches[1]));
             // 检查 token 是否过期
             if ($user) {
                 $loginAt = (int)($user['login_at'] ?? 0);

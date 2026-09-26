@@ -5,205 +5,171 @@
 
 namespace App\Controllers\Admin;
 
-use Core\Database;
-use Core\Cache;
 use Core\Event;
 use App\Events\Events;
+use App\Models\Post;
 
 class PostController extends AdminBase
 {
     /**
-     * 构建回帖列表查询条件
+     * 从查询串里取出后台列表的筛选条件（纯取值，SQL 在 Post::adminQuery 里）
      */
-    private function buildPostsWhere(): array
+    private function postFilters(): array
     {
-        $search = trim($_GET['search'] ?? '');
-        $username = trim($_GET['username'] ?? '');
-        $threadId = (int)($_GET['thread_id'] ?? 0);
-        $ip = trim($_GET['ip'] ?? '');
-
-        $where = "WHERE p.deleted_at IS NULL";
-        $params = [];
-
-        if ($search !== '') {
-            $where .= " AND p.content LIKE ?";
-            $params[] = "%" . addcslashes($search, '%_\\') . "%";
-        }
-        if ($username !== '') {
-            $where .= " AND p.username LIKE ?";
-            $params[] = "%" . addcslashes($username, '%_\\') . "%";
-        }
-        if ($threadId > 0) {
-            $where .= " AND p.thread_id = ?";
-            $params[] = $threadId;
-        }
-        if ($ip !== '') {
-            $where .= " AND p.user_ip LIKE ?";
-            $params[] = "%" . addcslashes($ip, '%_\\') . "%";
-        }
-
-        return [$where, $params];
-    }
-
-    private function getPostsSortCol(): array
-    {
-        $sortBy = $_GET['sort'] ?? 'id';
-        $sortDir = strtolower($_GET['dir'] ?? 'desc');
-        $allowedSorts = [
-            'id' => 'p.id',
-            'created_at' => 'p.created_at',
+        return [
+            'search'    => trim($_GET['search'] ?? ''),
+            'username'  => trim($_GET['username'] ?? ''),
+            'thread_id' => (int)($_GET['thread_id'] ?? 0),
+            'ip'        => trim($_GET['ip'] ?? ''),
+            'sort'      => (string)($_GET['sort'] ?? 'id'),
+            'dir'       => (string)($_GET['dir'] ?? 'desc'),
         ];
-        $sortCol = $allowedSorts[$sortBy] ?? 'p.id';
-        if (!in_array($sortDir, ['asc', 'desc'], true)) $sortDir = 'desc';
-        return [$sortCol, $sortDir];
     }
 
     public function posts(): void
     {
         $this->requireAdmin();
-        $this->render('admin/posts', ['pageTitle' => '回帖管理']);
+        $this->renderPostsPage();
     }
 
     /**
-     * 回帖列表 API
+     * 回帖数据（页面与 JSON API 共用同一份查询逻辑）
+     *
+     * @return array{rows: array, total: int, page: int, pages: int, sortDir: string}
+     */
+    private function fetchPosts(int $page, int $limit): array
+    {
+        return Post::adminList($this->postFilters(), $page, $limit);
+    }
+
+    /**
+     * 渲染回帖管理页面片段（GET 与增删后的刷新共用同一个渲染路径）
+     */
+    private function renderPostsPage(): void
+    {
+        $page  = max(1, (int)($_GET['page'] ?? 1));
+        $limit = 20;
+
+        $result = $this->fetchPosts($page, $limit);
+        $sortDir = $result['sortDir'];
+
+        $this->renderAdmin('admin/posts', [
+            'pageTitle' => '回帖管理',
+            'rows'      => $result['rows'],
+            'total'     => $result['total'],
+            'page'      => $page,
+            'pages'     => max(1, (int)ceil($result['total'] / $limit)),
+            'filters'   => [
+                'search'    => trim($_GET['search'] ?? ''),
+                'username'  => trim($_GET['username'] ?? ''),
+                'thread_id' => trim($_GET['thread_id'] ?? ''),
+                'ip'        => trim($_GET['ip'] ?? ''),
+            ],
+            'sort'      => [
+                'field' => $_GET['sort'] ?? 'id',
+                'dir'   => $sortDir,
+            ],
+        ], 'posts');
+    }
+
+    /**
+     * 回帖列表 API（保留，供外部 AJAX 调用）
      */
     public function postsApi(): void
     {
         $this->requireAdmin();
 
-        [$where, $params] = $this->buildPostsWhere();
-        $page = max(1, (int)($_GET['page'] ?? 1));
+        $page  = max(1, (int)($_GET['page'] ?? 1));
         $limit = min(50, max(10, (int)($_GET['limit'] ?? 20)));
 
-        $total = (int)(Database::fetchOne("SELECT COUNT(*) as cnt FROM posts p {$where}", $params)['cnt'] ?? 0);
-        $offset = ($page - 1) * $limit;
-
-        [$sortCol, $sortDir] = $this->getPostsSortCol();
-
-        $posts = Database::fetchAll(
-            "SELECT p.*, t.title as thread_title FROM posts p LEFT JOIN threads t ON p.thread_id = t.id {$where} ORDER BY {$sortCol} {$sortDir} LIMIT ? OFFSET ?",
-            array_merge($params, [$limit, $offset])
-        );
-
-        $this->layuiJson($posts, $total);
+        $result = $this->fetchPosts($page, $limit);
+        $this->jsonTable($result['rows'], $result['total']);
     }
 
     public function postDelete(): void
     {
         $this->requireAdmin();
 
-        $input = json_decode(file_get_contents('php://input'), true);
-        $id = (int)($input['id'] ?? 0);
-        if ($id <= 0) { $this->error('参数错误'); return; }
+        $input = $this->input();
+        // 兼容两种字段名：旧页面发的是 post_id，接口文档里写的是 id
+        $id = (int)($input['id'] ?? ($input['post_id'] ?? 0));
 
-        $post = Database::fetchOne("SELECT thread_id, user_id FROM posts WHERE id = ? AND deleted_at IS NULL", [$id]);
-        if (!$post) { $this->error('回帖不存在'); return; }
-
-        Database::beginTransaction();
-        try {
-            Database::execute("UPDATE posts SET deleted_at = ? WHERE id = ?", [time(), $id]);
-            Database::execute("UPDATE threads SET reply_count = CASE WHEN reply_count > 0 THEN reply_count - 1 ELSE 0 END WHERE id = ?", [$post['thread_id']]);
-            Database::execute("UPDATE users SET post_count = CASE WHEN post_count > 0 THEN post_count - 1 ELSE 0 END WHERE id = ?", [$post['user_id']]);
-
-            $forumId = Database::fetchOne("SELECT forum_id FROM threads WHERE id = ?", [$post['thread_id']])['forum_id'] ?? 0;
-            if ($forumId > 0) {
-                Database::execute("UPDATE forums SET post_count = CASE WHEN post_count > 0 THEN post_count - 1 ELSE 0 END WHERE id = ?", [$forumId]);
-            }
-            Database::commit();
-        } catch (\Throwable $e) {
-            Database::rollBack();
-            throw $e;
+        if ($id <= 0) {
+            $this->respondMutation(false, '参数错误', fn() => $this->renderPostsPage());
+            return;
         }
 
-        Cache::delete("thread:{$post['thread_id']}");
+        // 上下文用于审计日志；删除本身走服务层（计数、last_post、缓存都在那里统一处理）
+        $contexts = Post::getDeleteContexts([$id]);
+        if (empty($contexts)) {
+            $this->respondMutation(false, '回帖不存在', fn() => $this->renderPostsPage());
+            return;
+        }
+        $threadId = $contexts[0]['thread_id'];
+
+        $adminId = (int)($_SESSION['user_id'] ?? 0);
+        $groupId = (int)($_SESSION['group_id'] ?? 0);
+
+        try {
+            (new \App\Services\ThreadSvc())->deletePost($id, $adminId);
+        } catch (\RuntimeException $e) {
+            $this->respondMutation(false, $e->getMessage(), fn() => $this->renderPostsPage());
+            return;
+        }
+
         Event::dispatch(Events::ADMIN_THREAD_DELETED, [
             'action' => '删除回帖',
-            'admin_id' => $_SESSION['user_id'],
-            'detail' => "删除回帖 ID:{$id}（帖子 ID:{$post['thread_id']}）",
+            'admin_id' => $adminId,
+            'detail' => "删除回帖 ID:{$id}（帖子 ID:{$threadId}）",
             'target_type' => 'post',
             'target_id' => $id,
         ]);
-        $this->success('回帖已删除');
+
+        $this->respondMutation(true, '回帖已删除', fn() => $this->renderPostsPage());
     }
 
     public function postBatch(): void
     {
         $this->requireAdmin();
 
-        $input = json_decode(file_get_contents('php://input'), true);
+        $input = $this->input();
         $ids = $input['ids'] ?? [];
         $action = $input['action'] ?? '';
 
-        if (empty($ids) || !is_array($ids)) { $this->error('请选择回帖'); return; }
-        $ids = array_map('intval', $ids);
-        $count = 0;
-
-        if ($action === 'delete') {
-            // 批量查询所有待删除回帖（消除 N+1）
-            $ph = implode(',', array_fill(0, count($ids), '?'));
-            $posts = Database::fetchAll("SELECT p.id, p.thread_id, p.user_id, t.forum_id FROM posts p LEFT JOIN threads t ON p.thread_id = t.id WHERE p.id IN ({$ph}) AND p.deleted_at IS NULL", $ids);
-            if (empty($posts)) {
-                $this->error('没有可删除的回帖');
-                return;
-            }
-
-            // 聚合各维度的计数
-            $threadDeltas = [];
-            $userDeltas = [];
-            $forumDeltas = [];
-            $cacheKeys = [];
-            foreach ($posts as $p) {
-                $tid = (int)$p['thread_id'];
-                $uid = (int)$p['user_id'];
-                $fid = (int)($p['forum_id'] ?? 0);
-                $threadDeltas[$tid] = ($threadDeltas[$tid] ?? 0) + 1;
-                $userDeltas[$uid] = ($userDeltas[$uid] ?? 0) + 1;
-                if ($fid > 0) $forumDeltas[$fid] = ($forumDeltas[$fid] ?? 0) + 1;
-                $cacheKeys["thread:{$tid}"] = true;
-                $cacheKeys["user:profile:{$uid}"] = true;
-            }
-
-            $now = time();
-            Database::beginTransaction();
-            try {
-                // 批量软删除
-                Database::execute("UPDATE posts SET deleted_at = ? WHERE id IN ({$ph}) AND deleted_at IS NULL", array_merge([$now], $ids));
-                $count = count($posts);
-
-                // 批量更新 thread reply_count
-                foreach ($threadDeltas as $tid => $delta) {
-                    Database::execute("UPDATE threads SET reply_count = CASE WHEN reply_count >= ? THEN reply_count - ? ELSE 0 END WHERE id = ?", [$delta, $delta, $tid]);
-                }
-                // 批量更新 user post_count
-                foreach ($userDeltas as $uid => $delta) {
-                    Database::execute("UPDATE users SET post_count = CASE WHEN post_count >= ? THEN post_count - ? ELSE 0 END WHERE id = ?", [$delta, $delta, $uid]);
-                }
-                // 批量更新 forum post_count
-                foreach ($forumDeltas as $fid => $delta) {
-                    Database::execute("UPDATE forums SET post_count = CASE WHEN post_count >= ? THEN post_count - ? ELSE 0 END WHERE id = ?", [$delta, $delta, $fid]);
-                }
-                Database::commit();
-            } catch (\Throwable $e) {
-                Database::rollBack();
-                error_log('[Admin:Post] batch delete failed: ' . $e->getMessage());
-                $this->error('批量删除失败，请重试');
-                return;
-            }
-
-            // 缓存清理放在事务外
-            foreach ($cacheKeys as $k => $_) {
-                Cache::delete($k);
-            }
-            Event::dispatch(Events::ADMIN_THREAD_DELETED, [
-                'action' => '批量删除回帖',
-                'admin_id' => $_SESSION['user_id'],
-                'detail' => "批量删除 {$count} 条回帖",
-                'target_type' => 'post',
-            ]);
-            $this->success("已删除 {$count} 条回帖");
-        } else {
-            $this->error('未知操作');
+        if (empty($ids) || !is_array($ids)) {
+            $this->respondMutation(false, '请先选择要删除的回帖', fn() => $this->renderPostsPage());
             return;
         }
+        $ids = array_map('intval', $ids);
+
+        if ($action !== 'delete') {
+            $this->respondMutation(false, '未知操作', fn() => $this->renderPostsPage());
+            return;
+        }
+
+        $adminId = (int)($_SESSION['user_id'] ?? 0);
+        $groupId = (int)($_SESSION['group_id'] ?? 0);
+
+        try {
+            // 存在性、软删除、三处计数、last_post 重算、缓存清理与 mod 日志都在服务层
+            $count = (new \App\Services\ThreadSvc())->batchDeletePosts($ids, $adminId, $groupId);
+        } catch (\RuntimeException $e) {
+            $this->respondMutation(false, $e->getMessage(), fn() => $this->renderPostsPage());
+            return;
+        }
+
+        if ($count === 0) {
+            $this->respondMutation(false, '没有可删除的回帖', fn() => $this->renderPostsPage());
+            return;
+        }
+
+        Event::dispatch(Events::ADMIN_THREAD_DELETED, [
+            'action' => '批量删除回帖',
+            'admin_id' => $adminId,
+            'detail' => "批量删除 {$count} 条回帖",
+            'target_type' => 'post',
+        ]);
+
+        $this->respondMutation(true, "已删除 {$count} 条回帖", fn() => $this->renderPostsPage());
     }
 }

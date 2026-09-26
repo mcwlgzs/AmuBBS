@@ -1,32 +1,22 @@
-<div class="dropdown notif-dropdown" x-data="notifPanel()" @click.outside="open = false">
-    <button class="nav-icon" title="通知" @click="toggle()">
+<?php
+/**
+ * 通知入口（导航栏铃铛 + 下拉面板）
+ *
+ * 迁移说明（原来是一个 Alpine 通知面板组件）：
+ *   - 显隐交给通用下拉机制（[data-dropdown] / [data-dropdown-toggle] / [data-dropdown-menu]）
+ *   - 面板内容由 htmx 从 /notifications/popup 取回，服务端渲染，不再有 x-template 拼 HTML
+ *   - 未读角标 id="notifBadge"：标记已读后的片段会带一个 hx-swap-oob 的同名元素，
+ *     顺便把角标一起更新（不用再单独发一次请求）
+ */
+$_unread = (int)($_unreadCount ?? 0);
+?>
+<div class="dropdown notif-dropdown" data-dropdown>
+    <button class="nav-icon" title="通知" type="button" data-dropdown-toggle
+            hx-get="/notifications/popup" hx-target="#notifPopup" hx-swap="innerHTML">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>
-        <?php if ($_unreadCount > 0): ?>
-        <span class="badge" x-ref="badge"><?= $_unreadCount > 99 ? '99+' : $_unreadCount ?></span>
-        <?php else: ?>
-        <span class="badge" x-ref="badge" style="display:none"></span>
-        <?php endif; ?>
+        <span class="badge" id="notifBadge"<?= $_unread > 0 ? '' : ' style="display:none"' ?>><?= $_unread > 99 ? '99+' : $_unread ?></span>
     </button>
-    <div class="notif-popup" x-show="open" x-cloak x-transition>
-        <div class="notif-popup-header">
-            <span>通知</span>
-            <button class="notif-readall" @click="readAll()" x-show="items.length > 0">全部已读</button>
-        </div>
-        <div class="notif-popup-body">
-            <template x-if="loading">
-                <div class="notif-popup-empty">加载中...</div>
-            </template>
-            <template x-if="!loading && items.length === 0">
-                <div class="notif-popup-empty">暂无新通知</div>
-            </template>
-            <template x-for="item in items" :key="item.id">
-                <a class="notif-popup-item" :href="getLink(item)">
-                    <div class="notif-popup-item-title" x-text="item.title"></div>
-                    <div class="notif-popup-item-desc" x-text="item.content || ''"></div>
-                    <div class="notif-popup-item-time" x-text="timeAgo(item.created_at)"></div>
-                </a>
-            </template>
-        </div>
-        <a href="/notifications" class="notif-popup-footer">查看全部通知</a>
+    <div class="notif-popup" id="notifPopup" data-dropdown-menu hidden>
+        <div class="notif-popup-empty">加载中...</div>
     </div>
 </div>

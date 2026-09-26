@@ -5,7 +5,8 @@
 
 namespace App\Services;
 
-use Core\Database;
+use App\Models\Attachment;
+use App\Models\Thread;
 
 class AttachmentSvc
 {
@@ -120,10 +121,7 @@ class AttachmentSvc
 
         // 记录到附件表
         try {
-            Database::execute(
-                "INSERT INTO attachments (user_id, filename, filepath, filesize, mimetype, created_at) VALUES (?, ?, ?, ?, ?, ?)",
-                [$userId, $file['name'] ?? $filename, $url, $file['size'], $mimeType, time()]
-            );
+            Attachment::create($userId, $file['name'] ?? $filename, $url, (int)($file['size'] ?? 0), (string)$mimeType, time());
         } catch (\Throwable $e) {
             error_log('[AttachmentSvc] uploadImage DB record failed: ' . $e->getMessage());
         }
@@ -178,12 +176,7 @@ class AttachmentSvc
 
         $filepath = '/uploads/attachments/' . $dateDir . '/' . $storedName;
 
-        Database::execute(
-            "INSERT INTO attachments (user_id, filename, filepath, filesize, mimetype, created_at) VALUES (?, ?, ?, ?, ?, ?)",
-            [$userId, $originalName, $filepath, $file['size'], $mimeType, time()]
-        );
-
-        $attachId = Database::lastInsertId();
+        $attachId = Attachment::create($userId, $originalName, $filepath, (int)($file['size'] ?? 0), (string)$mimeType, time());
 
         return [
             'id' => $attachId,
@@ -199,7 +192,7 @@ class AttachmentSvc
      */
     public static function download(int $attachId, ?int $userId = null): void
     {
-        $attach = Database::fetchOne("SELECT * FROM attachments WHERE id = ?", [$attachId]);
+        $attach = Attachment::findFresh($attachId);
         if (!$attach) {
             throw new \RuntimeException('附件不存在');
         }
@@ -220,6 +213,17 @@ class AttachmentSvc
         $mimeType = $attach['mimetype'] ?: 'application/octet-stream';
         $isImage = isset(self::$allowedImageTypes[$mimeType]);
 
+        // 附件所属帖子/板块（图片和非图片都要用）
+        $threadId = (int)($attach['thread_id'] ?? 0);
+        $forumId = $threadId > 0 ? Thread::getForumId($threadId) : null;
+
+        // 板块浏览权限：对图片同样生效
+        // 原来图片附件完全跳过权限检查，受限板块里的图片可以靠猜 ID 直接下载；
+        // 而图片又不能强制登录（正文里是 <img src="/attachment/N">，游客要能看帖内图）。
+        if ($forumId !== null && !\App\Services\ForumSvc::canRead($forumId, $userId)) {
+            throw new \RuntimeException('您所在的用户组无权浏览此板块');
+        }
+
         // 非图片附件需要检查下载权限
         if (!$isImage) {
             if ($userId === null || $userId <= 0) {
@@ -230,27 +234,22 @@ class AttachmentSvc
                 throw new \RuntimeException('您所在的用户组无下载权限');
             }
             // 检查板块级下载权限
-            $threadId = (int)($attach['thread_id'] ?? 0);
-            if ($threadId > 0) {
-                $thread = Database::fetchOne("SELECT forum_id FROM threads WHERE id = ?", [$threadId]);
-                if ($thread) {
-                    $forumId = (int)$thread['forum_id'];
-                    if (!PermissionSvc::can($userId, 'down', $forumId)) {
-                        throw new \RuntimeException('您无权下载此板块的附件');
-                    }
-                }
+            if ($forumId !== null && !PermissionSvc::can($userId, 'down', $forumId)) {
+                throw new \RuntimeException('您无权下载此板块的附件');
             }
         }
 
         // 更新下载次数
-        Database::execute("UPDATE attachments SET downloads = downloads + 1 WHERE id = ?", [$attachId]);
+        Attachment::incrementDownloads($attachId);
 
         header('Content-Type: ' . $mimeType);
         header('Content-Length: ' . filesize($realPath));
 
         if (!$isImage) {
-            $asciiName = preg_replace('/[^\x20-\x7E]/', '_', $attach['filename']);
-            $utf8Name = rawurlencode($attach['filename']);
+            // 引号/分号/控制字符会让 Content-Disposition 变成畸形头
+            $safeName = preg_replace('/[\x00-\x1F\x7F"\\\\;]/', '_', (string)$attach['filename']);
+            $asciiName = preg_replace('/[^\x20-\x7E]/', '_', $safeName);
+            $utf8Name = rawurlencode((string)$attach['filename']);
             header("Content-Disposition: attachment; filename=\"{$asciiName}\"; filename*=UTF-8''{$utf8Name}");
         }
 
@@ -263,10 +262,7 @@ class AttachmentSvc
      */
     public static function getByThread(int $threadId): array
     {
-        return Database::fetchAll(
-            "SELECT * FROM attachments WHERE thread_id = ? ORDER BY created_at ASC",
-            [$threadId]
-        );
+        return Attachment::listByThread($threadId);
     }
 
     /**
@@ -274,14 +270,8 @@ class AttachmentSvc
      */
     public static function associateToThread(array $attachIds, int $threadId, int $userId, int $postId = 0): void
     {
-        if (empty($attachIds)) return;
-        $placeholders = implode(',', array_fill(0, count($attachIds), '?'));
         // 只关联属于当前用户且未关联的附件，防止劫持他人附件
-        $params = array_merge([$threadId, $postId, $userId], $attachIds);
-        Database::execute(
-            "UPDATE attachments SET thread_id = ?, post_id = ? WHERE user_id = ? AND thread_id = 0 AND id IN ({$placeholders})",
-            $params
-        );
+        Attachment::associateToThread($attachIds, $threadId, $userId, $postId);
     }
 
     /**
@@ -290,19 +280,14 @@ class AttachmentSvc
     public static function cleanOrphanAttachments(): int
     {
         $threshold = time() - 86400;
-        $orphans = Database::fetchAll(
-            "SELECT id, filepath FROM attachments WHERE thread_id = 0 AND post_id = 0 AND created_at < ?",
-            [$threshold]
-        );
+        $orphans = Attachment::orphansBefore($threshold);
 
         if (empty($orphans)) {
             return 0;
         }
 
         // 先删除数据库记录，再删物理文件，避免中途崩溃导致记录残留
-        $ids = array_column($orphans, 'id');
-        $placeholders = implode(',', array_fill(0, count($ids), '?'));
-        Database::execute("DELETE FROM attachments WHERE id IN ({$placeholders})", $ids);
+        Attachment::deleteByIds(array_column($orphans, 'id'));
 
         foreach ($orphans as $orphan) {
             $filePath = APP_PATH . 'public' . $orphan['filepath'];

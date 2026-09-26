@@ -1,17 +1,33 @@
 # 环境配置
 .env
 
-# 存储目录
-storage/logs/
-storage/plugin_config/
-storage/cache/
-storage/sessions/
+# 自动生成的应用密钥（APP_KEY 未配置时由 Core\AppKey 写入）
+storage/app_key
+
+# 存储目录（保留目录结构，忽略内容）
+storage/logs/*
+storage/plugin_config/*
+storage/cache/*
+storage/sessions/*
+storage/uploads/*
+storage/tmp/*
+!storage/logs/.gitkeep
+!storage/plugin_config/.gitkeep
+!storage/cache/.gitkeep
+!storage/sessions/.gitkeep
+!storage/uploads/.gitkeep
+!storage/tmp/.gitkeep
+
+# 部署脚本产生的备份（含 .env 与 app_key）
+backups/
 
 # 安装锁
 install/install.lock
 
-# 用户上传
-public/uploads/
+# 用户上传（保留目录结构，忽略内容）
+public/uploads/*
+!public/uploads/.gitkeep
+!public/uploads/.htaccess
 
 # 服务器日志
 server.log

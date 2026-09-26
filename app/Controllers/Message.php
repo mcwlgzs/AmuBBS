@@ -5,7 +5,12 @@
 
 namespace App\Controllers;
 
-use Core\Database;
+use App\Models\Blacklist;
+use App\Models\Message as MessageModel;
+use App\Models\Notification;
+use App\Models\User;
+use App\Services\SensitiveWordService;
+use Core\Cache;
 
 class Message extends Base
 {
@@ -18,51 +23,21 @@ class Message extends Base
         $userId = $this->getCurrentUserId();
 
         // 获取所有会话（按最新消息排序）
-        $conversations = Database::fetchAll("
-            SELECT
-                m.*,
-                CASE WHEN m.from_user_id = ? THEN m.to_user_id ELSE m.from_user_id END as other_user_id
-            FROM messages m
-            INNER JOIN (
-                SELECT
-                    LEAST(from_user_id, to_user_id) as u1,
-                    GREATEST(from_user_id, to_user_id) as u2,
-                    MAX(id) as max_id
-                FROM messages
-                WHERE (from_user_id = ? AND deleted_by_from = 0)
-                   OR (to_user_id = ? AND deleted_by_to = 0)
-                GROUP BY u1, u2
-            ) latest ON m.id = latest.max_id
-            ORDER BY m.created_at DESC
-            LIMIT 50
-        ", [$userId, $userId, $userId]);
+        $conversations = MessageModel::conversations($userId, 50);
 
-        // 获取对方用户信息（批量查询）
+        // 获取对方用户信息与未读数（各一条批量 SQL，避免 N+1）
         $otherUserIds = array_unique(array_column($conversations, 'other_user_id'));
         $otherUsers = [];
-        $unreadCounts = [];
-        if ($otherUserIds) {
-            $placeholders = implode(',', array_fill(0, count($otherUserIds), '?'));
-            $users = Database::fetchAll(
-                "SELECT id, username, nickname, avatar, nickname_color FROM users WHERE id IN ({$placeholders})",
-                array_values($otherUserIds)
-            );
-            foreach ($users as $u) {
-                $otherUsers[$u['id']] = $u;
-            }
-            // 批量查询未读数
-            $unreads = Database::fetchAll(
-                "SELECT from_user_id, COUNT(*) as c FROM messages WHERE from_user_id IN ({$placeholders}) AND to_user_id = ? AND is_read = 0 GROUP BY from_user_id",
-                [...array_values($otherUserIds), $userId]
-            );
-            foreach ($unreads as $ur) {
-                $unreadCounts[$ur['from_user_id']] = (int)$ur['c'];
-            }
+        foreach (User::getBasicsByIds($otherUserIds) as $u) {
+            $otherUsers[(int)$u['id']] = $u;
         }
+        $unreadCounts = MessageModel::unreadCountsBySender($userId, $otherUserIds);
+
         foreach ($conversations as &$conv) {
             $conv['other_user'] = $otherUsers[$conv['other_user_id']] ?? null;
-            $conv['unread'] = $unreadCounts[$conv['other_user_id']] ?? 0;
+            $conv['unread'] = $unreadCounts[(int)$conv['other_user_id']] ?? 0;
         }
+        unset($conv);
 
         $this->render('message/index', [
             'conversations' => $conversations,
@@ -78,10 +53,7 @@ class Message extends Base
         $userId = $this->getCurrentUserId();
         $otherUserId = (int)$otherUserId;
 
-        $otherUser = Database::fetchOne(
-            "SELECT id, username, nickname, avatar, nickname_color FROM users WHERE id = ? AND deleted_at IS NULL",
-            [$otherUserId]
-        );
+        $otherUser = User::getBasicsById($otherUserId);
 
         if (!$otherUser) {
             $this->redirect('/messages');
@@ -89,26 +61,10 @@ class Message extends Base
         }
 
         // 标记为已读
-        Database::useMaster();
-        try {
-            Database::execute(
-                "UPDATE messages SET is_read = 1 WHERE from_user_id = ? AND to_user_id = ? AND is_read = 0",
-                [$otherUserId, $userId]
-            );
-        } finally {
-            Database::restoreReadWrite();
-        }
+        MessageModel::markReadFrom($otherUserId, $userId);
 
         // 获取消息列表
-        $messages = Database::fetchAll("
-            SELECT m.*, u.username, u.avatar
-            FROM messages m
-            LEFT JOIN users u ON m.from_user_id = u.id
-            WHERE ((m.from_user_id = ? AND m.to_user_id = ? AND m.deleted_by_from = 0)
-                OR (m.from_user_id = ? AND m.to_user_id = ? AND m.deleted_by_to = 0))
-            ORDER BY m.created_at ASC
-            LIMIT 100
-        ", [$userId, $otherUserId, $otherUserId, $userId]);
+        $messages = MessageModel::between($userId, $otherUserId, 100);
 
         $now = time();
         foreach ($messages as &$m) {
@@ -132,8 +88,8 @@ class Message extends Base
 
         // 频率限制：10秒内只能发一条私信
         $floodKey = "flood:message:{$userId}";
-        if (\Core\Cache::get($floodKey) !== null) {
-            $this->error('发送过于频繁，请稍后再试');
+        if (Cache::get($floodKey) !== null) {
+            $this->respondFragment(false, '发送过于频繁，请稍后再试', static function (): void {});
             return;
         }
 
@@ -141,71 +97,68 @@ class Message extends Base
         $content = trim($_POST['content'] ?? '');
 
         if ($toUserId <= 0) {
-            $this->error('请指定收信人');
+            $this->respondFragment(false, '请指定收信人', static function (): void {});
             return;
         }
 
         if ($toUserId === $userId) {
-            $this->error('不能给自己发私信');
+            $this->respondFragment(false, '不能给自己发私信', static function (): void {});
             return;
         }
 
         if (empty($content)) {
-            $this->error('请输入消息内容');
+            $this->respondFragment(false, '请输入消息内容', static function (): void {});
             return;
         }
 
         if (mb_strlen($content) > 2000) {
-            $this->error('消息内容不能超过 2000 字');
+            $this->respondFragment(false, '消息内容不能超过 2000 字', static function (): void {});
             return;
         }
 
         // 验证收信人存在
-        $toUser = Database::fetchOne("SELECT id FROM users WHERE id = ? AND deleted_at IS NULL", [$toUserId]);
-        if (!$toUser) {
-            $this->error('用户不存在');
+        if (!User::getBasicsById($toUserId)) {
+            $this->respondFragment(false, '用户不存在', static function (): void {});
             return;
         }
 
         // 黑名单检查：任一方拉黑则禁止发私信
-        if (\App\Services\BlacklistSvc::isEitherBlocked($userId, $toUserId)) {
-            $this->error('无法向该用户发送私信');
+        if (Blacklist::isEitherBlocked($userId, $toUserId)) {
+            $this->respondFragment(false, '无法向该用户发送私信', static function (): void {});
             return;
         }
 
         // 敏感词过滤
-        $filter = \App\Services\SensitiveWordService::filter($content);
+        $filter = SensitiveWordService::filter($content);
         if ($filter['blocked']) {
-            $this->error('消息包含违禁词');
+            $this->respondFragment(false, '消息包含违禁词', static function (): void {});
             return;
         }
         $content = $filter['text'];
 
-        Database::useMaster();
-        try {
-            Database::execute(
-                "INSERT INTO messages (from_user_id, to_user_id, content, is_read, created_at, deleted_by_from, deleted_by_to) VALUES (?, ?, ?, 0, ?, 0, 0)",
-                [$userId, $toUserId, $content, time()]
-            );
-        } finally {
-            Database::restoreReadWrite();
-        }
+        // 落库 + 取 id 由模型在一个事务里完成（lastInsertId 必须和 INSERT 同连接）
+        $messageId = MessageModel::create($userId, $toUserId, $content);
 
         // 发送通知
-        $fromUser = Database::fetchOne("SELECT username FROM users WHERE id = ?", [$userId]);
-        $username = $fromUser['username'] ?? '用户';
-        \App\Services\NotificationSvc::notify(
+        $username = User::getUsername($userId);
+        Notification::notify(
             $toUserId,
             $userId,
             'message',
-            $username . ' 给你发了一条私信',
+            ($username !== '' ? $username : '用户') . ' 给你发了一条私信',
             mb_substr($content, 0, 50),
             'message',
             0
         );
 
-        \Core\Cache::set($floodKey, time(), 10);
-        $this->success('发送成功');
+        Cache::set($floodKey, time(), 10);
+        if (!$this->isHtmx()) {
+            $this->success('发送成功');
+            return;
+        }
+
+        // htmx：直接回新消息那一行，前端 append 到 #messageList（不整页刷新，也不弹提示）
+        $this->renderMessageRow($messageId);
     }
 
     /**
@@ -218,43 +171,65 @@ class Message extends Base
         $msgId = (int)($_POST['message_id'] ?? 0);
 
         if ($msgId <= 0) {
-            $this->error('参数错误');
+            $this->respondFragment(false, '参数错误', static function (): void {});
             return;
         }
 
-        $msg = Database::fetchOne(
-            "SELECT id, from_user_id, created_at, is_recalled FROM messages WHERE id = ?",
-            [$msgId]
-        );
+        $msg = MessageModel::findForRecall($msgId);
 
         if (!$msg) {
-            $this->error('消息不存在');
+            $this->respondFragment(false, '消息不存在', static function (): void {});
             return;
         }
 
         if ((int)$msg['from_user_id'] !== $userId) {
-            $this->error('只能撤回自己的消息');
+            $this->respondFragment(false, '只能撤回自己的消息', static function (): void {});
             return;
         }
 
         if (!empty($msg['is_recalled'])) {
-            $this->error('消息已撤回');
+            $this->respondFragment(false, '消息已撤回', static function (): void {});
             return;
         }
 
         // 2分钟内可撤回
         if (time() - (int)$msg['created_at'] > 120) {
-            $this->error('超过2分钟无法撤回');
+            $this->respondFragment(false, '超过2分钟无法撤回', static function (): void {});
             return;
         }
 
-        Database::useMaster();
-        try {
-            Database::execute("UPDATE messages SET is_recalled = 1 WHERE id = ?", [$msgId]);
-        } finally {
-            Database::restoreReadWrite();
+        MessageModel::recall($msgId);
+
+        if (!$this->isHtmx()) {
+            $this->success('已撤回');
+            return;
         }
 
-        $this->success('已撤回');
+        // htmx：回替换后的那一行（撤回后 is_recalled=1，片段自己会显示「消息已撤回」），
+        // 所以不需要再弹提示
+        $this->respondFragment(true, '已撤回', function () use ($msgId): void {
+            $this->renderMessageRow($msgId);
+        }, false);
+    }
+
+    /**
+     * 渲染单条私信（片段）
+     *
+     * 发送成功和撤回成功都复用它：一个 append 到消息列表末尾，一个替换原来那一行。
+     */
+    private function renderMessageRow(int $messageId): void
+    {
+        $selfId = $this->getCurrentUserId();
+        $msg = MessageModel::findRow($messageId);
+
+        if (!$msg) {
+            return;
+        }
+
+        $msg['can_recall'] = ((int)$msg['from_user_id'] === $selfId
+            && empty($msg['is_recalled'])
+            && (time() - (int)$msg['created_at']) <= 120);
+
+        $this->render('message/_row', ['msg' => $msg, 'selfId' => $selfId]);
     }
 }

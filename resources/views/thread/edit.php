@@ -1,5 +1,17 @@
-<?php $pageTitle = '编辑帖子'; $pageCss = ['thread']; include APP_PATH . 'resources/views/layout/header.php'; ?>
+<?php
+$pageTitle = '编辑帖子';
+$pageCss = ['thread'];
+include APP_PATH . 'resources/views/layout/header.php';
 
+/**
+ * 编辑帖子
+ *
+ * 与发新帖同一套 htmx 表单约定（见 thread/create.php 顶部说明）。
+ * data-draft-restore="always"：编辑页的草稿优先于服务端内容，
+ * 保持和迁移前一致的行为（原来写的是 saved?.title || 服务端值）。
+ */
+$tagNames = implode(',', array_map(static fn($t) => $t['name'], $tags ?? []));
+?>
 <div class="breadcrumb">
     <a href="/">首页</a> <span class="breadcrumb-sep">/</span>
     <a href="/forum/<?= (int)$forum['id'] ?>"><?= htmlspecialchars($forum['name'] ?? '') ?></a> <span class="breadcrumb-sep">/</span>
@@ -7,82 +19,50 @@
     <span>编辑</span>
 </div>
 
-<div class="card" x-data="editThread()">
+<div class="card">
     <div class="section-title">编辑帖子</div>
-    <form @submit.prevent="submit">
+    <form hx-post="/thread/edit" hx-swap="none" hx-indicator="this"
+          hx-disabled-elt="#threadEditSubmit"
+          data-draft-key="draft_edit_<?= (int)$thread['id'] ?>"
+          data-draft-restore="always">
+        <input type="hidden" name="thread_id" value="<?= (int)$thread['id'] ?>">
+
         <div class="form-group">
-            <label class="form-label">标题</label>
-            <input type="text" x-model="form.title" placeholder="帖子标题（至少2个字符）" class="form-input" required>
+            <label class="form-label" for="threadTitle">标题</label>
+            <input type="text" id="threadTitle" name="title" class="form-input"
+                   value="<?= htmlspecialchars($thread['title']) ?>"
+                   placeholder="帖子标题（至少2个字符）" required minlength="2" maxlength="120" autofocus>
         </div>
+
         <div class="form-group">
-            <label class="form-label">标签</label>
-            <input type="text" x-model="form.tags" placeholder="多个标签用逗号分隔" class="form-input">
+            <label class="form-label" for="threadTags">标签</label>
+            <input type="text" id="threadTags" name="tags" class="form-input" data-tags-input
+                   value="<?= htmlspecialchars($tagNames) ?>"
+                   placeholder="多个标签用逗号分隔">
             <?php if (!empty($allTags)): ?>
             <div style="margin-top:6px;display:flex;flex-wrap:wrap;gap:4px;">
                 <?php foreach ($allTags as $t): ?>
-                <span class="tag tag-clickable" style="cursor:pointer;font-size:12px;" @click="addTag('<?= htmlspecialchars($t['name'], ENT_QUOTES) ?>')"><?= htmlspecialchars($t['name']) ?></span>
+                <span class="tag tag-clickable" style="cursor:pointer;font-size:12px;" data-tag-add="<?= htmlspecialchars($t['name'], ENT_QUOTES) ?>"><?= htmlspecialchars($t['name']) ?></span>
                 <?php endforeach; ?>
             </div>
             <?php endif; ?>
         </div>
+
         <div class="form-group">
-            <label class="form-label">内容</label>
-            <?php $editorRows = 14; $editorPlaceholder = '帖子内容（至少5个字符）'; $editorModel = 'form.content'; $editorMode = 'full'; include APP_PATH . 'resources/views/components/tinymce-editor.php'; ?>
+            <label class="form-label" for="post-content">内容</label>
+            <textarea id="post-content" name="content" rows="14" class="form-textarea" required minlength="5"
+                      placeholder="支持 Markdown：**粗体**、*斜体*、`代码`、```代码块```" style="resize:vertical;"><?= htmlspecialchars($thread['content']) ?></textarea>
         </div>
-        <?php include APP_PATH . 'resources/views/components/alert.php'; ?>
-        <div style="display:flex;gap:10px;align-items:center;">
-            <button type="submit" class="btn btn-primary" :disabled="loading">
-                <span x-show="!loading">保存修改</span>
-                <span x-show="loading">保存中...</span>
+
+        <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;">
+            <button type="submit" id="threadEditSubmit" class="btn btn-primary">
+                <span class="hx-idle">保存修改</span>
+                <span class="hx-busy">保存中...</span>
             </button>
             <a href="/thread/<?= (int)$thread['id'] ?>" class="btn btn-ghost">取消</a>
-            <span x-show="draftSaved" style="font-size:12px;color:var(--text-muted);">草稿已自动保存</span>
+            <span data-draft-hint style="display:none;font-size:12px;color:var(--text-muted);">草稿已自动保存</span>
         </div>
     </form>
 </div>
-
-<script>
-function editThread() {
-    const draftKey = 'draft_edit_<?= (int)$thread['id'] ?>';
-    const saved = JSON.parse(localStorage.getItem(draftKey) || 'null');
-    return {
-        form: {
-            thread_id: '<?= (int)$thread['id'] ?>',
-            title: saved?.title || <?= json_encode($thread['title'], JSON_HEX_TAG | JSON_HEX_APOS) ?>,
-            content: saved?.content || <?= json_encode($thread['content_fmt'] ?: \Core\Markdown::parse($thread['content']), JSON_HEX_TAG | JSON_HEX_APOS) ?>,
-            tags: saved?.tags || <?= json_encode(implode(',', array_map(fn($t) => $t['name'], $tags ?? [])), JSON_HEX_TAG | JSON_HEX_APOS) ?>
-        },
-        errorMessage: '', successMessage: '', loading: false,
-        draftSaved: false,
-        init() {
-            this.$watch('form', () => {
-                localStorage.setItem(draftKey, JSON.stringify({ title: this.form.title, content: this.form.content, tags: this.form.tags }));
-                this.draftSaved = true;
-            });
-        },
-        clearDraft() { localStorage.removeItem(draftKey); },
-        addTag(name) {
-            const current = this.form.tags ? this.form.tags.split(',').map(s => s.trim()).filter(Boolean) : [];
-            if (!current.includes(name)) { current.push(name); this.form.tags = current.join(','); }
-        },
-        getTextLength() {
-            const tmp = document.createElement('div');
-            tmp.innerHTML = this.form.content;
-            return (tmp.textContent || tmp.innerText || '').trim().length;
-        },
-        async submit() {
-            this.errorMessage = ''; this.successMessage = '';
-            if (this.form.title.length < 2) { toast('标题至少2个字符', 'error'); return; }
-            if (this.getTextLength() < 5) { toast('内容至少5个字符', 'error'); return; }
-            this.loading = true;
-            try {
-                const data = await App.post('/thread/edit', this.form, { silent: true });
-                if (data.success) { this.clearDraft(); toast('保存成功', 'success'); setTimeout(() => location.href = '/thread/' + this.form.thread_id, 800); }
-                else { toast(data.error || data.message || '保存失败', 'error'); }
-            } finally { this.loading = false; }
-        }
-    }
-}
-</script>
 
 <?php include APP_PATH . 'resources/views/layout/footer.php'; ?>

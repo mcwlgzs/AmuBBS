@@ -4,6 +4,14 @@
  * 变量: $threadItem - 帖子数组，需包含 id, title, username, user_id, avatar, created_at, views, reply_count
  *       $showAvatar  - 是否显示头像，默认 true
  *       $showForum   - 是否显示板块标签，默认 true
+ *
+ * ⚠️ 当前**没有任何页面 include 这个文件**（2026-09 全库 grep `$threadItem` 只在本文件出现）：
+ *    首页列表用的是 resources/views/index.php:137+ 的内联 HTML，其它列表页各有自己的标记。
+ *    保留它是为了给后续统一列表样式留个模板，但请注意：
+ *      - 这里每渲染一行会调用 VipSvc::getVipBadge()（一次缓存/DB 读取），
+ *        若将来在列表里使用，必须先把当页 user_id 集合批量预加载，
+ *        否则 20 条 = 20 次独立读取（LevelSvc::getLevelBadge 是 0 SQL，可放心用）。
+ *      - 如确认不再需要，直接删除本文件即可（没有引用方）。
  */
 $_t = $threadItem ?? [];
 if (empty($_t)) return;
